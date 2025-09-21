@@ -253,25 +253,31 @@ class _Neo4j:
 
         return messages, message_num_list
 
-    def get_last_k_msgs(self, face_id, k=20):
+    def get_last_k_msgs(self, face_id, k=20, all_msgs=False):
         """ 
-            Getting last k messages of the face_id
+            Get messages of the face_id:
+            - If all_msgs=True → entire chain
+            - Else → only last k messages
         """
-        last_k_query = """ 
-            MATCH (p:Person {face_id: $face_id})
+        limit = ".." if all_msgs else f"..{k}"
+
+        query = f""" 
+            MATCH (p:Person {{face_id: $face_id}})
             WITH p
             MATCH (p)-[:MESSAGE]->(m:Message)
             WITH m
-            MATCH window = (m0:Message)-[NEXT*0..20]->(m)
-            RETURN nodes(window) as chain
+            MATCH window = (m0:Message)-[:NEXT*0{limit}]->(m)
+            RETURN nodes(window) AS chain
         """
+
         from utils import message_format
 
         messages = []
         message_set = set()
         message_num_list = []
-        results = self.read_query(last_k_query, face_id=face_id, k=k)
-        for idx, result in enumerate(results):
+
+        results = self.read_query(query, face_id=face_id, k=k)
+        for result in results:
             row = result["chain"]
             for msg in row:
                 if msg['message_number'] not in message_set:
@@ -279,10 +285,10 @@ class _Neo4j:
                     message_set.add(msg['message_number'])
                     message_num_list.append(msg['message_number'])
                     messages.append(llm_dict)
-        
-        return messages, message_num_list 
 
-    def get_person_messages(self, latest_message: dict, face_id: str):
+        return messages, message_num_list
+
+    def get_person_messages(self, latest_message: dict, face_id: str, is_rag: bool=True):
         """ 
             Takes the query, does the cosine distance on the messages of the person 
             and then returns them in ascending order, also reduces the returns the 
@@ -291,17 +297,22 @@ class _Neo4j:
         # Message is in format {"<user>": "<message>"}
         latest_text = latest_message["content"]
 
-        cos_msgs, cos_msg_num_list = self.get_cos_msgs(latest_text, face_id)
+        if is_rag:
+            cos_msgs, cos_msg_num_list = self.get_cos_msgs(latest_text, face_id)
 
-        # Getting last 5 messages
-        last_20_msgs, last_20_msg_num_list = self.get_last_k_msgs(face_id)
+            # Getting last 5 messages
+            last_20_msgs, last_20_msg_num_list = self.get_last_k_msgs(face_id)
 
-        # Merge message_num_list and remove duplicates while maintaining order
-        merged_message_num_list = sorted(set(cos_msg_num_list) | set(last_20_msg_num_list))
+            # Merge message_num_list and remove duplicates while maintaining order
+            merged_message_num_list = sorted(set(cos_msg_num_list) | set(last_20_msg_num_list))
+            # Create a mapping of message numbers to messages
+            message_mapping = {num: msg for num, msg in zip(cos_msg_num_list, cos_msgs)}
+            message_mapping.update({num: msg for num, msg in zip(last_20_msg_num_list, last_20_msgs)})  # Update with latest
+        else:
+            last_msgs, last_msg_num_list = self.get_last_k_msgs(face_id, all_msgs=True)
+            merged_message_num_list = sorted(set(last_msg_num_list))
+            message_mapping = {num: msg for num, msg in zip(last_msg_num_list, last_msgs)}
 
-        # Create a mapping of message numbers to messages
-        message_mapping = {num: msg for num, msg in zip(cos_msg_num_list, cos_msgs)}
-        message_mapping.update({num: msg for num, msg in zip(last_20_msg_num_list, last_20_msgs)})  # Update with latest
 
         # Reconstruct merged messages list based on sorted message numbers
         merged_messages = [message_mapping[num] for num in merged_message_num_list]

@@ -4,6 +4,7 @@ class PersonDetails:
         self.image = None
         self.latest_usr_msg = {}
         self.latest_llm_msg = {}
+        self.is_rag = True
 
         self.all_relevant_messages = []
 

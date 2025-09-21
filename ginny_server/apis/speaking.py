@@ -61,7 +61,7 @@ class _Speaking(ApiBase):
     def __call__(self, person_details: PersonDetails) -> Any:
         face_id = person_details.get_attribute("face_id")
         latest_msg = person_details.get_latest_user_message()
-        messages = Neo4j.get_person_messages(latest_msg, face_id)
+        messages = Neo4j.get_person_messages(latest_msg, face_id, is_rag=person_details.is_rag)
 
         # Developing system prompt 
         person_attributes = person_details.get_attribute("attributes")
