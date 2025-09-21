@@ -94,5 +94,5 @@ class _Speaking(ApiBase):
         person_details.set_latest_llm_message(llm_dict)
         person_details.set_relevant_messages(messages + [llm_dict])
 
-        Neo4j.add_message_to_person(person_details)
-        RelationshipChecker.adding_text2relationship_checker(person_details)
+        # Neo4j.add_message_to_person(person_details)
+        # RelationshipChecker.adding_text2relationship_checker(person_details)
