@@ -1,3 +1,4 @@
+from time import perf_counter
 from typing import Any
 
 from core_api import ChatGPT, Grok, RelationshipChecker, AttributeFinder
@@ -6,7 +7,17 @@ from .api_base import ApiBase
 
 class _Speaking(ApiBase):
     def __init__(self) -> None:
+        self.current_time = 0.0
         super().__init__()
+
+    def set_time(self, time):
+        self.current_time = time
+
+    def reset_time(self):
+        self.current_time = 0.0
+
+    def get_time(self):
+        return self.current_time
 
     def _developing_system_prompt(self, 
                                   person_name, 
@@ -76,6 +87,7 @@ class _Speaking(ApiBase):
         total_prompt = system_dict + messages 
         
         # response = Llama.send_to_model(total_prompt, stream=True)
+        t0 = perf_counter()
         try:
             response = Grok.send_text(total_prompt, stream=True, grok_model="grok-2-1212")
         except Exception as e:
@@ -89,7 +101,12 @@ class _Speaking(ApiBase):
                 content = chunk.choices[0].delta.content
                 llm_response += content
                 yield ApiObject(content)
-        
+        t1 = perf_counter()
+
+        grok_time = (t1 - t0) * 1000
+        print("\n\nThe time it takes to get grok ", grok_time)
+        self.set_time(grok_time)
+
         llm_dict = message_format("assistant", llm_response)
         person_details.set_latest_llm_message(llm_dict)
         person_details.set_relevant_messages(messages + [llm_dict])

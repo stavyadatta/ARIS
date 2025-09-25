@@ -2,6 +2,10 @@ from time import perf_counter
 from reasoner import Reasoner
 from executor import Executor
 
+# Speaking.get_time() can be used to get the time taken, however once you 
+# get time make sure you call Speaking.reset_time() so that the time on Speaking side 
+# can be reset
+from apis import Speaking
 
 class TestRag:
     def __init__(self):
@@ -21,11 +25,13 @@ class TestRag:
         printed_chars = 0
         chunks = 0
         t2 = perf_counter()
+        text = ""
         for response_chunk in response:
             response_text = response_chunk.textchunk
             printed_chars += len(response_text)
             chunks += 1
             print(response_text, end="", flush=True)
+            text += response_text
         t3 = perf_counter()
 
         print("\n")  # final newline after stream
@@ -46,9 +52,12 @@ class TestRag:
 
 if __name__ == "__main__":
     transcription = "Who let the dogs out GINNY?"
-    face_id = "face_1"
-    is_rag = False
+    face_id = ["face_369", "face_6", "face_1"]
+    is_rag = [True, False]
 
-    test_rag = TestRag()
-    test_rag(face_id, transcription, is_rag=is_rag)
+    for face in face_id:
+        for rag_bool in is_rag:
+            print(f"\n#### THIS IS FOR {face} and rag is {rag_bool}#####")
+            test_rag = TestRag()
+            test_rag(face, transcription, is_rag=rag_bool)
 
