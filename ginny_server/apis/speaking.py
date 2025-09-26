@@ -5,6 +5,22 @@ from core_api import ChatGPT, Grok, RelationshipChecker, AttributeFinder
 from utils import PersonDetails, Neo4j, message_format, ApiObject
 from .api_base import ApiBase
 
+import json
+from typing import List
+
+def save_total_prompt(total_prompt: List, filename: str = "total_prompt.json") -> None:
+    """
+    Save the total_prompt list into a JSON file.
+    
+    Args:
+        total_prompt (List): The list of prompts to save.
+        filename (str): File to save the list in.
+    """
+    with open(filename, "w") as f:
+        json.dump(total_prompt, f, indent=4)
+
+
+
 class _Speaking(ApiBase):
     def __init__(self) -> None:
         self.current_time = 0.0
@@ -85,7 +101,7 @@ class _Speaking(ApiBase):
         )
 
         total_prompt = system_dict + messages 
-        
+
         # response = Llama.send_to_model(total_prompt, stream=True)
         t0 = perf_counter()
         try:
@@ -104,8 +120,8 @@ class _Speaking(ApiBase):
         t1 = perf_counter()
 
         grok_time = (t1 - t0) * 1000
-        print("\n\nThe time it takes to get grok ", grok_time)
         self.set_time(grok_time)
+        print("The Grok time is ", grok_time)
 
         llm_dict = message_format("assistant", llm_response)
         person_details.set_latest_llm_message(llm_dict)

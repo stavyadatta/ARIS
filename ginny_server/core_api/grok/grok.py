@@ -88,7 +88,6 @@ class _GrokHandler:
             if isinstance(response, str):
                 raise Exception("chatgpt did not respond, returned str ", response)
             content = response.choices[0].message.content
-            print("The content is ", content)
             return content
 
         except openai.OpenAIError as e:

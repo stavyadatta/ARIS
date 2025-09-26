@@ -5,6 +5,7 @@ class PersonDetails:
         self.latest_usr_msg = {}
         self.latest_llm_msg = {}
         self.is_rag = True
+        self.message_save = False
 
         self.all_relevant_messages = []
 

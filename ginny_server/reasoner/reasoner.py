@@ -70,7 +70,6 @@ class _Reasoner:
 
             try:
                 response = Grok.send_text(total_prompt, stream=False)
-                print("The response is ", response)
             except Exception as e:
                 print("grok failed ", e)
                 response = ChatGPT.send_text(total_prompt, stream=False)

@@ -8,6 +8,7 @@ from neo4j import GraphDatabase
 
 
 from utils import PersonDetails
+
 class _Neo4j:
     def __init__(self, neo4j_url="bolt://172.27.72.27:7687"):
         neo4j_passwd = os.environ["NEO4J_PASSWORD"]
@@ -277,12 +278,10 @@ class _Neo4j:
         message_set = set()
         message_num_list = []
 
-        print("Before reading the query")
         t0 = perf_counter()
         results = self.read_query(query, face_id=face_id, k=k)
         t1 = perf_counter()
         time_counter = (t1 - t0) * 1000
-        print("Reading query taking this long ", time_counter)
         for result in results:
             row = result["chain"]
             for msg in row:
@@ -294,7 +293,7 @@ class _Neo4j:
 
         return messages, message_num_list
 
-    def get_person_messages(self, latest_message: dict, face_id: str, is_rag: bool=True):
+    def get_person_messages(self, latest_message: dict, face_id: str, is_rag: bool=True, message_save: bool=False):
         """ 
             Takes the query, does the cosine distance on the messages of the person 
             and then returns them in ascending order, also reduces the returns the 
@@ -315,24 +314,31 @@ class _Neo4j:
             message_mapping = {num: msg for num, msg in zip(cos_msg_num_list, cos_msgs)}
             message_mapping.update({num: msg for num, msg in zip(last_20_msg_num_list, last_20_msgs)})  # Update with latest
         else:
-            print("Perf counter is now being called \n")
             t0 = perf_counter()
             last_msgs, last_msg_num_list = self.get_last_k_msgs(face_id, all_msgs=True)
-            print("message retrieval taking time")
             merged_message_num_list = sorted(set(last_msg_num_list))
             message_mapping = {num: msg for num, msg in zip(last_msg_num_list, last_msgs)}
             t1 = perf_counter()
 
             non_rag_time = (t1 - t0) * 1000.0
-            print("Time to retrieve all the messages in non rag condition ", non_rag_time)
 
 
         # Reconstruct merged messages list based on sorted message numbers
         merged_messages = [message_mapping[num] for num in merged_message_num_list]
 
+        if message_save and not is_rag:
+            query = """
+                MATCH (p:Person {face_id: $face_id})
+                SET p.messages = $merged_messages
+            """
+            query_params = {
+                "face_id": face_id,
+                "merged_messages": json.dumps(merged_messages)
+            }
+            self.write_query(query, **query_params)
+
         # Adding the latest_message to list 
         merged_messages.append(latest_message)
-
         return merged_messages
 
     def add_message_to_person(self, person_details: PersonDetails):
