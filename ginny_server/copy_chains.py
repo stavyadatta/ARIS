@@ -20,34 +20,44 @@ RETURN properties(p) AS person,
 LIMIT 1
 """
 
+REPEAT_TIMES = 100  # make this configurable if you want
+
 CREATE_COPY_CYPHER = """
-WITH $personProps AS personProps, $messages AS messages
+WITH $personProps AS personProps, $messages AS messages, $repeats AS repeats
 // 1) Create new Person
 CREATE (np:Person)
 SET np += personProps
 
-// 2) Create copies of all messages (works even if $messages is empty)
-WITH np, messages
-UNWIND messages AS m
+// 2) Load original chain into an ordered list mlist
+WITH np, personProps, [m IN messages | m] AS mlist, repeats
+
+// 3) Create copies for each repeat and each position, preserving global order
+UNWIND range(0, repeats-1) AS r
+UNWIND range(0, size(mlist)-1) AS i
+WITH np, personProps, r, i, mlist[i] AS m
 CREATE (nm:Message)
 SET nm += m
+SET nm.face_id = personProps.face_id
+WITH np, r, i, nm
+ORDER BY r, i
+WITH np, collect(nm) AS allMsgs
 
-// 3) Gather in order and re-link NEXT
-WITH np, collect(nm) AS mlist
-UNWIND range(0, size(mlist)-2) AS i
-WITH np, mlist, mlist[i] AS a, mlist[i+1] AS b
+// 4) Re-link NEXT across the whole repeated sequence
+UNWIND range(0, size(allMsgs)-2) AS k
+WITH np, allMsgs, allMsgs[k] AS a, allMsgs[k+1] AS b
 CREATE (a)-[:NEXT]->(b)
 
-// 4) Collapse to one row, then link Person -> last message once
-WITH DISTINCT np, mlist
+// 5) Collapse to a single row and link Person -> last message once
+WITH DISTINCT np, allMsgs
 WITH np,
-     CASE WHEN size(mlist) > 0 THEN mlist[size(mlist)-1] ELSE NULL END AS lastMsg
+     CASE WHEN size(allMsgs) > 0 THEN allMsgs[size(allMsgs)-1] ELSE NULL END AS lastMsg
 FOREACH (_ IN CASE WHEN lastMsg IS NULL THEN [] ELSE [1] END |
   CREATE (np)-[:MESSAGE]->(lastMsg)
 )
 
 RETURN np
 """
+
 
 def _fetch_person_and_chain(db, face_id: str):
     rows = list(db.read_query(FETCH_CHAIN_CYPHER, face_id=face_id))
@@ -62,44 +72,34 @@ def _with_updated_face_id(props: Dict[str, Any], new_face_id: str) -> Dict[str, 
     out["face_id"] = new_face_id
     return out
 
-def copy_people_and_chains(db, source_face_ids: List[str], start_from: int = 7000, prefix: str = "face_") -> List[str]:
-    """
-    Copies each Person and their message chain.
-    Returns the list of newly created face_ids in the same order as inputs.
-
-    Note: If your original graph enforces uniqueness on Person.face_id,
-    make sure 'face_{start_from + i}' does not collide.
-    """
+def copy_people_and_chains(db, source_face_ids, start_from=7000, prefix="face_", repeats=REPEAT_TIMES):
     new_face_ids = []
 
     for i, src_fid in enumerate(source_face_ids):
         new_fid = f"{prefix}{start_from + i}"
 
-        # 1) Read original person + ordered chain of messages
+        # Read original person + ordered chain
         person_props, messages_props = _fetch_person_and_chain(db, src_fid)
 
-        # 2) Update face_id on new Person
-        new_person_props = _with_updated_face_id(person_props, new_fid)
+        # Person copy: overwrite face_id
+        new_person_props = dict(person_props)
+        new_person_props["face_id"] = new_fid
 
-        # 3) Update face_id on every Message (only if present originally)
-        new_messages = []
-        for msg in messages_props:
-            if "face_id" in msg:
-                new_messages.append(_with_updated_face_id(msg, new_fid))
-            else:
-                new_messages.append(dict(msg))  # unchanged
+        # Message templates: keep properties as-is (face_id will be overwritten in Cypher)
+        new_messages = [dict(m) for m in messages_props]
 
-        # 4) Create the copy in one write
         db.write_query(
             CREATE_COPY_CYPHER,
             personProps=new_person_props,
-            messages=new_messages
+            messages=new_messages,
+            repeats=repeats
         )
 
         new_face_ids.append(new_fid)
 
     return new_face_ids
 
+#
 # -----------------------------
 # Example usage:
 # -----------------------------
