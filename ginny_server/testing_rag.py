@@ -21,18 +21,19 @@ QUESTIONS = [
     "If you lack specific memories about me, what responsible, general guidance would you give someone like me about next steps or resources?"
 ]
 
-# ==== FILL THESE 10 ENTRIES ====
-# message_len is your current count of Message nodes (or tokens/messages) for that face.
+# ==== FILL THESE ENTRIES ====
 face_profiles = [
-    "face_7001", "face_7002", "face_7003", "face_7004",
-    "face_7005", "face_7006", "face_7007", "face_7008",
-    "face_7009", "face_7010", "face_7011", "face_7012", "face_7013", "face_1"
+    # "face_7001", "face_7002", "face_7003", "face_7004",
+    # "face_7005", "face_7006", "face_7007", "face_7008",
+    # "face_7009", "face_7010", "face_7011", "face_7012", 
+    "face_7013", "face_1"
 ]
 # ==============================
 
-REPITITION = 3
-OUT_CSV = Path("7000s_rag_benchmark_results_repitition.csv")
+REPITITION = 3  # number of times to repeat each question for both RAG and non-RAG
+OUT_CSV = Path("7000s_rag_benchmark_results_repitition_part_2.csv")
 PRINT_STREAM = True  # set True if you also want to see streamed chunks in console
+
 
 def fetch_message_len(face_id: str) -> int:
     """
@@ -49,9 +50,7 @@ def fetch_message_len(face_id: str) -> int:
         for row in results:
             return int(row.get("message_len", 0)) if row else 0
     except Exception:
-        # Optional: log/print if you want visibility
         return 0
-
     return 0
 
 
@@ -103,6 +102,7 @@ class TestRag:
             "response_text": text.strip(),
         }
 
+
 def main():
     # CSV header
     fieldnames = [
@@ -110,6 +110,7 @@ def main():
         "message_len",
         "question_idx",
         "question",
+        "repitition",       # <-- new column
         "is_rag",
         "exec_init_ms",
         "stream_ms",
@@ -128,17 +129,19 @@ def main():
 
         for q_idx, q in enumerate(QUESTIONS, start=1):
             for rag_bool in (True, False):
-                if PRINT_STREAM:
-                    print(f"\n#### face={face} | RAG={rag_bool} | Q{q_idx}: {q} ####")
-                result = tester(face, q, is_rag=rag_bool)
-                rows.append({
-                    "face_id": face,
-                    "message_len": mlen,
-                    "question_idx": q_idx,
-                    "question": q,
-                    "is_rag": rag_bool,
-                    **result
-                })
+                for rep in range(1, REPITITION + 1):
+                    if PRINT_STREAM:
+                        print(f"\n#### face={face} | RAG={rag_bool} | repitition={rep} | Q{q_idx}: {q} ####")
+                    result = tester(face, q, is_rag=rag_bool)
+                    rows.append({
+                        "face_id": face,
+                        "message_len": mlen,
+                        "question_idx": q_idx,
+                        "question": q,
+                        "repitition": rep,
+                        "is_rag": rag_bool,
+                        **result
+                    })
 
     # write CSV
     with OUT_CSV.open("w", newline="", encoding="utf-8") as f:
@@ -147,6 +150,7 @@ def main():
         writer.writerows(rows)
 
     print(f"Wrote {len(rows)} rows to {OUT_CSV.resolve()}")
+
 
 if __name__ == "__main__":
     main()
