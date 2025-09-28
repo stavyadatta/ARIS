@@ -313,18 +313,23 @@ class _Neo4j:
             # Create a mapping of message numbers to messages
             message_mapping = {num: msg for num, msg in zip(cos_msg_num_list, cos_msgs)}
             message_mapping.update({num: msg for num, msg in zip(last_20_msg_num_list, last_20_msgs)})  # Update with latest
+            # Reconstruct merged messages list based on sorted message numbers
+            merged_messages = [message_mapping[num] for num in merged_message_num_list]
         else:
             t0 = perf_counter()
-            last_msgs, last_msg_num_list = self.get_last_k_msgs(face_id, all_msgs=True)
-            merged_message_num_list = sorted(set(last_msg_num_list))
-            message_mapping = {num: msg for num, msg in zip(last_msg_num_list, last_msgs)}
+            read_person_query = """ 
+                MATCH (p:Person {face_id: $face_id})
+                RETURN p.messages as messages
+            """
+            read_query_param = {
+                "face_id": face_id
+            }
+            response = self.read_query(read_person_query, **read_query_param)
+            merged_messages = json.loads(response[0].get("messages"))
             t1 = perf_counter()
 
             non_rag_time = (t1 - t0) * 1000.0
-
-
-        # Reconstruct merged messages list based on sorted message numbers
-        merged_messages = [message_mapping[num] for num in merged_message_num_list]
+            print("The non rag time for Retrieve is ", non_rag_time)
 
         if message_save and not is_rag:
             query = """

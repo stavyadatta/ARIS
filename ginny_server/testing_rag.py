@@ -6,6 +6,8 @@ from reasoner import Reasoner
 from executor import Executor
 from apis import Speaking  # Speaking.get_time(), Speaking.reset_time()
 
+from utils import Neo4j
+
 QUESTIONS = [
     "Based on your memory, what do you already know about me? If you have specifics, summarise them; otherwise give a general, privacy-safe answer.",
     "What are my main interests or hobbies you’ve observed? If you know concrete details, list them; otherwise provide a general response.",
@@ -22,25 +24,36 @@ QUESTIONS = [
 # ==== FILL THESE 10 ENTRIES ====
 # message_len is your current count of Message nodes (or tokens/messages) for that face.
 face_profiles = [
-    {"face_id": "face_1",   "message_len": 1104},
-    {"face_id": "face_6",   "message_len": 151},
-    {"face_id": "face_60",   "message_len": 152},
-    {"face_id": "face_218",   "message_len": 116},
-    {"face_id": "face_63",   "message_len": 120},
-    {"face_id": "face_162",   "message_len": 106},
-    {"face_id": "face_197",   "message_len": 80},
-    {"face_id": "face_365",   "message_len": 92},
-    {"face_id": "face_192",   "message_len": 54},
-    {"face_id": "face_224",  "message_len": 66},
-    {"face_id": "face_271",  "message_len": 20},
-    {"face_id": "face_277",  "message_len": 16},
-    {"face_id": "face_318",  "message_len": 46},
-    {"face_id": "face_377",  "message_len": 28},
+    "face_7001", "face_7002", "face_7003", "face_7004",
+    "face_7005", "face_7006", "face_7007", "face_7008",
+    "face_7009", "face_7010", "face_7011", "face_7012", "face_7013", "face_1"
 ]
 # ==============================
 
-OUT_CSV = Path("rag_benchmark_results.csv")
+REPITITION = 3
+OUT_CSV = Path("7000s_rag_benchmark_results_repitition.csv")
 PRINT_STREAM = True  # set True if you also want to see streamed chunks in console
+
+def fetch_message_len(face_id: str) -> int:
+    """
+    Returns the latest message_len as the maximum message_number
+    among Message nodes connected via :MESSAGE from the given Person.
+    Falls back to 0 if none exist.
+    """
+    query = """
+    MATCH (p:Person {face_id: $face_id})-[:MESSAGE]->(m:Message)
+    RETURN coalesce(max(m.message_number), 0) AS message_len
+    """
+    try:
+        results = Neo4j.read_query(query, face_id=face_id)
+        for row in results:
+            return int(row.get("message_len", 0)) if row else 0
+    except Exception:
+        # Optional: log/print if you want visibility
+        return 0
+
+    return 0
+
 
 class TestRag:
     def __call__(self, face_id: str, transcription: str, is_rag: bool = True):
@@ -111,16 +124,15 @@ def main():
     rows = []
 
     for face in face_profiles:
-        fid = face["face_id"]
-        mlen = face["message_len"]
+        mlen = fetch_message_len(face)
 
         for q_idx, q in enumerate(QUESTIONS, start=1):
             for rag_bool in (True, False):
                 if PRINT_STREAM:
-                    print(f"\n#### face={fid} | RAG={rag_bool} | Q{q_idx}: {q} ####")
-                result = tester(fid, q, is_rag=rag_bool)
+                    print(f"\n#### face={face} | RAG={rag_bool} | Q{q_idx}: {q} ####")
+                result = tester(face, q, is_rag=rag_bool)
                 rows.append({
-                    "face_id": fid,
+                    "face_id": face,
                     "message_len": mlen,
                     "question_idx": q_idx,
                     "question": q,

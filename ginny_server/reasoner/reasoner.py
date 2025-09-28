@@ -80,6 +80,7 @@ class _Reasoner:
 
             if response_text == "no change":
                 response_text = person_details.get_attribute("state")
+            response_text = "speak"
 
             if response_text not in ("no change", "no change."):
                 person_details.set_attribute("state", response_text)
