@@ -1,5 +1,5 @@
 # === Config ===
-INPUT_CSV  = "rag_benchmark_results_with_similarity.csv"
+INPUT_CSV  = "./7000s_rag_benchmark_results_repitition_similarity.csv"
 
 import pandas as pd
 
@@ -8,16 +8,16 @@ def main():
     df = pd.read_csv(INPUT_CSV)
 
     # Check required columns
-    for col in ["face_id", "rag_nonrag_similarity"]:
+    for col in ["message_len", "rag_nonrag_similarity"]:
         if col not in df.columns:
             raise KeyError(f"Missing required column: {col}")
 
     # Drop rows without similarity score
     df_valid = df.dropna(subset=["rag_nonrag_similarity"]).copy()
 
-    # Group by face_id and calculate mean + std
+    # Group by message_len and calculate mean + std
     summary = (
-        df_valid.groupby("face_id")["rag_nonrag_similarity"]
+        df_valid.groupby("message_len")["rag_nonrag_similarity"]
         .agg(["mean", "std"])
         .reset_index()
         .rename(columns={"mean": "avg_similarity", "std": "std_similarity"})
@@ -29,7 +29,7 @@ def main():
 
     # Append as a new row
     overall_row = pd.DataFrame({
-        "face_id": ["ALL"],
+        "message_len": ["ALL"],
         "avg_similarity": [overall_mean],
         "std_similarity": [overall_std]
     })

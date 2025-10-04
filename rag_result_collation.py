@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 # ---------- Config ----------
-CSV_PATH = "/workspace/7000s_rag_benchmark_results.csv"   # change if needed
-SAVE_DIR = Path("7000s_rag_results")
+CSV_PATH = "/workspace/7000s_rag_benchmark_results_repitition_filtered.csv"   # change if needed
+SAVE_DIR = Path("./7000s_rag_results_repitition_filtered/")
 TIME_METRICS_MS = ["speaking_ms", "exec_init_ms", "stream_ms", "total_ms"]
 OTHER_METRICS = ["printed_chars"]  # added per your request
 METRICS_TO_PLOT = TIME_METRICS_MS + OTHER_METRICS
@@ -49,7 +49,7 @@ x_min, x_max = agg["message_len"].min(), agg["message_len"].max()
 
 def nice_ylabel(metric: str) -> str:
     if metric in TIME_METRICS_MS:
-        return f"{metric} (ms)"
+        return f"{metric} (milliseconds)"
     return metric
 
 def plot_metric(metric: str):
@@ -68,8 +68,8 @@ def plot_metric(metric: str):
     if not rag_off.empty:
         ax.plot(rag_off["message_len"], rag_off[metric], marker="o", label="RAG: OFF")
 
-    ax.set_title(f"{metric} vs message_len (avg over all faces & questions)")
-    ax.set_xlabel("message_len")
+    ax.set_title(f"{metric} vs Number of Messages (avg over all user ids & questions)")
+    ax.set_xlabel("Number of Messages")
     ax.set_ylabel(nice_ylabel(metric))
     ax.set_xlim(x_min, x_max)
     ax.grid(True, alpha=0.3)

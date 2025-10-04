@@ -1,6 +1,6 @@
 # === Config ===
-INPUT_CSV  = "/workspace/7000s_rag_benchmark_results.csv"
-OUTPUT_CSV = "7000s_rag_benchmark_results_with_similarity.csv"
+INPUT_CSV  = "/workspace/face_1_rag_output.csv"
+OUTPUT_CSV = "face_1_rag_output_similarity.csv"
 
 import pandas as pd
 import torch
