@@ -8,7 +8,7 @@ from .grok import _GrokHandler
 from .relationship_checker import _RelationshipChecker
 from .attribute_finder import _AttributeFinder
 from .clip_classification import _ClipClassification
-from .trackers import OCSort
+from .qwen import _QwenHandler
 
 FaceRecognition = _FaceRecognition()
 WhisperSpeech2Text = _WhisperSpeech2Text()
@@ -21,6 +21,7 @@ Grok = _GrokHandler()
 RelationshipChecker = _RelationshipChecker()
 AttributeFinder = _AttributeFinder()
 ClipClassification = _ClipClassification()
+Qwen = _QwenHandler()
 
 __all__ = ["FaceRecognition", 
            "WhisperSpeech2Text", 
@@ -32,7 +33,8 @@ __all__ = ["FaceRecognition",
            "Grok",
            "RelationshipChecker",
            "AttributeFinder",
-           "ClipClassification"
+           "ClipClassification",
+           "Qwen"
            ]
 
 
