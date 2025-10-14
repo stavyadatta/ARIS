@@ -23,7 +23,7 @@ class AudioManager2(object):
 
     def init_service(self, session):
         self.audio_service = session.service("ALAudioDevice")
-        self.audio_service.setOutputVolume(30)
+        self.audio_service.setOutputVolume(90)
         self.audio_service.enableEnergyComputation()
 
     def calculate_rms_energy(self, audio_data):
@@ -38,8 +38,8 @@ class AudioManager2(object):
         Record the audio data only when the frontMicEnergy crosses a threshold,
         and stop when it's below the threshold for 10 consecutive loops.
         """
-        energy_threshold = 370
-        max_below_thresh_loops = 15  # Stop recording after 10 loops below threshold
+        energy_threshold = 3000
+        max_below_thresh_loops = 5  # Stop recording after 10 loops below threshold
 
 
         # Get the front mic energy
