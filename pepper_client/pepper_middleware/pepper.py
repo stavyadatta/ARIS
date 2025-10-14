@@ -41,11 +41,32 @@ class Pepper():
         self.life_service = self.session.service("ALAutonomousLife")
         self.camera_manager = CameraManager(self.session, resolution=5, colorspace=11, fps=30)
 
+        # wifi = self.session.service("ALConnectionManager")
+        #
+        # print("The Network state: ", wifi.state())
+        #
+        # wifi.scan()
+        #
+        # services = wifi.services()
+        #
+        # for service in services:
+        #     network = dict(service)
+        #     if network["Name"] == "":
+        #         print("{hidden} " + network["ServiceId"])
+        #     else:
+        #         print (network["Name"] + " " + network["ServiceId"])
+        #
+        #     if network["Name"] == "Stavya Hotspot":
+        #         print("Connecting to service id")
+        #         wifi.connect(network["ServiceId"])
+        #
+        # exit()
         self.standard_movement = StandardMovement(self.session)
         self.speech_manager = SpeechManager(self.session)
         self.audio_manager = AudioManager2(self.session)
 
         self.eye_led_manager = EyeLEDManager(self.session)
+        # self.session.listen("tcp://10.81.240.83:9559")
         self.session.listen("tcp://192.168.0.50:9559")
         self.session.registerService("AudioManager2", self.audio_manager)
         self.audio_manager.init_service(self.session)

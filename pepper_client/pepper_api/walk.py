@@ -1,88 +1,55 @@
+#!/usr/bin/env python3
 import qi
 import argparse
 import sys
 import time
-import requests
 
-class MovementManager:
-    def __init__(self, session, connection_url):
-        self.motion_service  = session.service("ALMotion")
-        self.posture_service = session.service("ALRobotPosture")
-        # Disable autonomous life
-        self.alife_service = session.service("ALAutonomousLife")
-        self.alife_service.setState("disabled")
-        # Wake up the robot
-        self.motion_service.wakeUp()
-        self.reset_posture()
-        # Enable body stiffness
-        self.motion_service.setStiffnesses("Body", 1.0)
-        print("MovementManager initialized.")
-        self.address = connection_url
-
-    def reset_posture(self, speed=0.5):
-        """Makes the robot stand up straight. Used to reset posture."""
-        self.posture_service.goToPosture("StandInit", speed)
-
-    def walk_forward(self, distance=1.0):
-        """Makes the robot walk forward a specified distance."""
-        # Move the robot forward
-        self.motion_service.moveTo(distance, 0.0, 0.0)
-        print("Robot walked forward {} meter(s).".format(distance))
-
-    def stop(self):
-        """Stops the robot's movement."""
-        self.motion_service.stopMove()
-        print("Robot movement stopped.")
-
-    def walkToward(self, x=0, y=0, theta=0, verbose=False):
-        """Alternative method to make the robot walk."""
-        # Ensure the 'requests' library is imported
-        # Update 'self.address' with the correct robot address
-        headers = {'content-type': "/locomotion/walkToward"}
-        response = requests.post(
-            self.address + headers["content-type"],
-            params={
-                'x': str(x),
-                'y': str(y),
-                'theta': str(theta),
-                'verbose': str(1 if verbose else 0)
-            }
-        )
-        if verbose:
-            print("walkToward(x={}, y={}, theta={})".format(x, y, theta))
-        if response.status_code != 200:
-            print("Failed to send walkToward command.")
-
-
-    def terminate(self, speed=0.5):
-        """Puts the robot to rest upon termination."""
-        self.posture_service.goToPosture("Sit", speed)
-        self.motion_service.rest()
-        print("Robot is now resting.")
-
-    def __del__(self):
-        self.terminate()
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--ip", type=str, default="192.168.137.131",
-                        help="Robot IP address. On robot or Local Naoqi: use '127.0.0.1'.")
-    parser.add_argument("--port", type=int, default=9559,
-                        help="Naoqi port number")
-
-    args = parser.parse_args()
-    session = qi.Session()
-    connection_url = str("tcp://" + args.ip + ":" + str(args.port))
+def main(ip, port, distance, speed):
+    connection_url = f"tcp://{ip}:{port}"
+    app = qi.Application(["pepper_walk", f"--qi-url={connection_url}"])
     try:
-        session.connect(connection_url)
+        app.start()
     except RuntimeError:
-        print("Can't connect to Naoqi at ip \"{}\" on port {}.\n"
-              "Please check your script arguments. Run with -h option for help.".format(args.ip, args.port))
+        print(f"❌ Cannot connect to Pepper at {ip}:{port}")
         sys.exit(1)
 
-    manager = MovementManager(session, connection_url)
-    # Make the robot walk forward 1 meter
-    manager.walkToward(x=1)
-    # Clean up
-    del manager
+    session = app.session
+    motion = session.service("ALMotion")
+    posture = session.service("ALRobotPosture")
+    life = session.service("ALAutonomousLife")
+
+    # Disable autonomous behaviors so we’re in direct control
+    life.setState("disabled")
+
+    # Wake up & prepare
+    motion.wakeUp()
+    motion.setStiffnesses("Body", 1.0)
+    # Allow arms to move for balance
+    motion.setMoveArmsEnabled(True, True)
+    # Stand straight
+    posture.goToPosture("StandInit", 0.5)
+    time.sleep(1.0)
+
+    # Walk forward
+    try:
+        # speed is in m/s; Pepper's max is ~0.5 m/s
+        config = [["MaxVelXY", speed]]
+        motion.moveTo(distance, 0.0, 0.0, config)
+        print(f"✅ Walked forward {distance:.2f} m at {speed:.2f} m/s")
+    except RuntimeError as e:
+        print("❌ moveTo failed:", e)
+
+    # Sit and rest
+    posture.goToPosture("Sit", 0.5)
+    motion.rest()
+    app.stop()
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--ip",       type=str,   default="192.168.0.52", help="Pepper IP")
+    p.add_argument("--port",     type=int,   default=9559,          help="Naoqi port")
+    p.add_argument("--distance", type=float, default=0.5,           help="Meters to walk")
+    p.add_argument("--speed",    type=float, default=0.2,           help="Speed (m/s)")
+    args = p.parse_args()
+    main(args.ip, args.port, args.distance, args.speed)
 
