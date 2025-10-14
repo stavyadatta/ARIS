@@ -2,7 +2,7 @@ import traceback
 from typing import Optional
 
 from utils import Neo4j, PersonDetails, message_format
-from core_api import Qwen, ChatGPT, Grok, ClipClassification
+from core_api import Llama, ChatGPT, Grok, ClipClassification
 from .prompt import reasoner_prompt
 
 class _Reasoner:
@@ -69,14 +69,11 @@ class _Reasoner:
             total_prompt = system_prompt + user_prompt
 
             try:
-                response = Qwen.send_text(total_prompt, stream=False)
+                response = Grok.send_text(total_prompt, stream=False)
+                print("The response is ", response)
             except Exception as e:
-                print("Qwen failed ", e)
-                try:
-                    response = Grok.send_text(total_prompt, stream=False)
-                except Exception as e:
-                    print("Grok failed ")
-                    response = ChatGPT.send_text(total_prompt, stream=False)
+                print("grok failed ", e)
+                response = ChatGPT.send_text(total_prompt, stream=False)
             response_text = response.choices[0].message.content
 
             if response_text == "bad input":

@@ -1,6 +1,6 @@
 from typing import Any
 
-from core_api import ChatGPT, Grok, RelationshipChecker, AttributeFinder
+from core_api import ChatGPT, Grok, RelationshipChecker, AttributeFinder, Qwen
 from utils import PersonDetails, Neo4j, message_format, ApiObject
 from .api_base import ApiBase
 
@@ -78,6 +78,7 @@ class _Speaking(ApiBase):
         # response = Llama.send_to_model(total_prompt, stream=True)
         try:
             response = Grok.send_text(total_prompt, stream=True, grok_model="grok-2-1212")
+            # response = Qwen.send_text(total_prompt, stream=True, qwen_model="grok-2-1212")
         except Exception as e:
             print("grok failed ", e)
             response = ChatGPT.send_text(total_prompt, stream=True, model='gpt-4-turbo') 

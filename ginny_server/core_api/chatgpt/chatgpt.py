@@ -188,6 +188,32 @@ class _OpenAIHandler:
             return f"API Error: {str(e)}"
 
 
+    # def send_text_get_json_gpt5(self, messages: list[dict], stream: bool, img=None, max_tokens=500, model="gpt-5-2025-08-07"):
+    #     """
+    #         :param messages: A dictionary of messages for additional context to be 
+    #          provided to the model for benefit
+    #         :param stream: Whether to stream the output or not
+    #         :param img: incase of VLM adding an image for additional context
+    #
+    #         :return: Generator of words from llm incase of stream otherwise whole text 
+    #             output
+    #     """
+    #     try:
+    #         response = self.client.chat.completions.create(
+    #             model=model,
+    #             messages=messages,
+    #             max_completion_tokens=max_tokens,
+    #             stream=stream,
+    #             response_format={"type": "json_object"}
+    #         )
+    #         if isinstance(response, str):
+    #             raise Exception("Chatgpt did not respond, only str ", response)
+    #         return response
+    #     except openai.OpenAIError as e:
+    #         return f"API Error: {str(e)}"
+    #
+    #
+    #
     def develop_last_message(self, last_message, img_base64):
         """
         Create the last message dictionary with the image included.

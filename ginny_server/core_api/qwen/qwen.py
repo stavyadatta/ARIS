@@ -1,8 +1,8 @@
-from _typeshed import ExcInfo
 import openai
 import numpy as np
 
 BASE_URL = "http://127.0.0.1:30000/v1"  # your sglang server
+# BASE_URL = "http://59.138.98.106:72299/v1"  # your sglang server
 API_KEY = "EMPTY"
 
 class _QwenHandler():
