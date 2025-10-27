@@ -16,12 +16,30 @@ from concurrent import futures
 
 import grpc_communication.pepper_auto_pb2_grpc as pepper_pb2_grpc
 import grpc_communication.pepper_auto_pb2 as pepper_pb2
-from grpc_communication.grpc_pb2 import AudioImgRequest, ImageStreamRequest
+from grpc_communication.grpc_pb2 import AudioImgRequest, ImageStreamRequest, TextChunk
 from grpc_communication.grpc_pb2_grpc import MediaServiceStub, SecondaryChannelStub
 from pepper_api import CameraManager, AudioManager2, HeadManager, EyeLEDManager, \
     SpeechManager, CustomMovement, StandardMovement
 from utils import SpeechProcessor
+from button_frontend import run_button_server, Flags
 from pepper_auto import PepperAutoController
+
+class TextChunk:
+    def __init__(self, text, mode="default"):
+        self.text = text
+        self.mode = mode
+
+class ResponseStream:
+    def __init__(self, full_text, mode="default"):
+        self.chunks = [TextChunk(full_text, mode)]
+
+    def __iter__(self):
+        # Makes it iterable, so enumerate() works
+        return iter(self.chunks)
+
+FIRST_SPEECH =  "Let the fire, of Monash and First Source be alive in this amazing partnership."
+def get_first_speech():
+    yield TextChunk(text=FIRST_SPEECH, mode='default')
 
 logging.basicConfig(filename="app.log", level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -198,8 +216,16 @@ class Pepper():
         
         speech_processor.body_thread.join()
 
+    def first_source_part(self):
+        self.do_not_move_head.set()
+        self.process_server_response(get_first_speech())
+        self.do_not_move_head.clear()
+
     def main(self):
         audio_data, sample_rate = self.get_audio()
+        if Flags.consume_first_source():
+            self.first_source_part()
+            self.main()
         height, width = 240, 320
         last_frame = np.zeros((height, width, 3), dtype=np.uint8)
         try:
@@ -301,6 +327,11 @@ if __name__ == "__main__":
     pepper_auto_thread = Thread(target=pepper_auto_server, args=(p,))
     pepper_auto_thread.daemon = True
     pepper_auto_thread.start()
+
+    # Starting the front end control thread 
+    button_control_thread = Thread(target=run_button_server)
+    button_control_thread.daemon = True
+    button_control_thread.start()
 
     try:
         # Main loop: send audio and video and process LLM responses

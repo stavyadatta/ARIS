@@ -80,12 +80,15 @@ class SpeechProcessor:
         Continuously retrieve sentences from the queue and make Pepper speak them.
         """
         print("execute response first \n \n \n")
+        print(f"Status of flags is running {self.is_running}, sentence_queue {bool(self.sentence_queue)} \n")
         while self.is_running or self.sentence_queue:
             if self.sentence_queue:
                 sentence_tuple = self.sentence_queue.popleft()
                 sentence_to_say = sentence_tuple[0]
                 mode = sentence_tuple[1]
+                print("Coming inside this part")
                 if not is_valid_json(sentence_to_say):
+                    print("Coming inside the not valid json part?")
                     self.do_movement.set()
                     self.speech_function(sentence_to_say)
                 else:
