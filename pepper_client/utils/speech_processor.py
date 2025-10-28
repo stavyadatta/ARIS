@@ -86,9 +86,7 @@ class SpeechProcessor:
                 sentence_tuple = self.sentence_queue.popleft()
                 sentence_to_say = sentence_tuple[0]
                 mode = sentence_tuple[1]
-                print("Coming inside this part")
                 if not is_valid_json(sentence_to_say):
-                    print("Coming inside the not valid json part?")
                     self.do_movement.set()
                     self.speech_function(sentence_to_say)
                 else:
