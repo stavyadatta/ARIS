@@ -7,7 +7,9 @@ import time
 import sys
 import soundfile as sf
 
-from button_frontend import Flags
+from button_frontend import Buttons_vals, Mic_UI, Telemetry
+
+ENERGY_THRESHOLD = 370
 
 class AudioManager2(object):
     def __init__(self, session, recording_duration=2):
@@ -25,7 +27,7 @@ class AudioManager2(object):
 
     def init_service(self, session):
         self.audio_service = session.service("ALAudioDevice")
-        self.audio_service.setOutputVolume(40)
+        self.audio_service.setOutputVolume(50)
         self.audio_service.enableEnergyComputation()
 
     def calculate_rms_energy(self, audio_data):
@@ -40,23 +42,23 @@ class AudioManager2(object):
         Record the audio data only when the frontMicEnergy crosses a threshold,
         and stop when it's below the threshold for 10 consecutive loops.
         """
-        energy_threshold = 370
         max_below_thresh_loops = 15  # Stop recording after 10 loops below threshold
 
 
         # Get the front mic energy
         current_energy = self.audio_service.getFrontMicEnergy()
+        Telemetry.set_front_mic_energy(current_energy)
         print("The front mic energy is {}".format(current_energy))
 
-        if Flags.consume_stop_recording(): 
+        if Buttons_vals.consume_stop_recording(): 
             self.process_completion()
             print("Exiting via the Stop button")
 
-        elif Flags.peek_first_source():
+        elif Buttons_vals.peek_first_source():
             self.process_completion()
             print("Exit via First Source Button")
 
-        elif current_energy > energy_threshold:
+        elif current_energy > Mic_UI.peek_mic_threshold():
             # Reset the below-threshold counter when the energy crosses the threshold
             self.below_threshold_count = 0
             self.first_high_thresh = True

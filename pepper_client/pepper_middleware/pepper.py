@@ -21,7 +21,7 @@ from grpc_communication.grpc_pb2_grpc import MediaServiceStub, SecondaryChannelS
 from pepper_api import CameraManager, AudioManager2, HeadManager, EyeLEDManager, \
     SpeechManager, CustomMovement, StandardMovement
 from utils import SpeechProcessor
-from button_frontend import run_button_server, Flags
+from button_frontend import run_button_server, Buttons_vals
 from pepper_auto import PepperAutoController
 
 class TextChunk:
@@ -37,7 +37,7 @@ class ResponseStream:
         # Makes it iterable, so enumerate() works
         return iter(self.chunks)
 
-FIRST_SPEECH =  "Let the fire, of Monash and First Source be alive in this amazing partnership."
+FIRST_SPEECH =  "M. O. U. between FirstSource and Monash sounds like an exciting opportunity for Research and Innovation to me! Let us sign this agreement!!! "
 def get_first_speech():
     yield TextChunk(text=FIRST_SPEECH, mode='default')
 
@@ -223,7 +223,7 @@ class Pepper():
 
     def main(self):
         audio_data, sample_rate = self.get_audio()
-        if Flags.consume_first_source():
+        if Buttons_vals.consume_first_source():
             self.first_source_part()
             self.main()
         height, width = 240, 320
