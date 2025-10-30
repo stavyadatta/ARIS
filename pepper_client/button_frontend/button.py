@@ -49,46 +49,6 @@ class _IntSetting:
             self._v = snapped
             return self._v
 
-
-# -------------------------------------------------
-# Global shared Flags and Settings
-# -------------------------------------------------
-class Buttons_vals:
-    """Import this class in other Python code to interact programmatically."""
-    first_source = _Latch()
-    stop_recording = _Latch()
-
-    @classmethod
-    def set_first_source(cls): cls.first_source.set(True)
-    @classmethod
-    def set_stop_recording(cls): cls.stop_recording.set(True)
-
-    @classmethod
-    def peek_first_source(cls) -> bool: return cls.first_source.peek()
-    @classmethod
-    def peek_stop_recording(cls) -> bool: return cls.stop_recording.peek()
-
-    @classmethod
-    def consume_first_source(cls) -> bool: return cls.first_source.consume()
-    @classmethod
-    def consume_stop_recording(cls) -> bool: return cls.stop_recording.consume()
-
-
-class Mic_UI:
-    """Thread-safe runtime settings."""
-    _mic_threshold = _IntSetting(initial=370, min_v=12, max_v=8000, step=20)
-
-    # --- Similar API as Flags ---
-    @classmethod
-    def peek_mic_threshold(cls) -> int:
-        """Return current mic threshold value."""
-        return cls._mic_threshold.get()
-
-    @classmethod
-    def set_mic_threshold(cls, value: int) -> int:
-        """Update mic threshold (snapped to step)."""
-        return cls._mic_threshold.set(value)
-
 # ---- Float setting (no snapping) ----
 class _FloatVar:
     def __init__(self, initial: float = 0.0):
@@ -102,6 +62,48 @@ class _FloatVar:
             self._v = float(x)
             return self._v
 
+# -------------------------------------------------
+# Global shared Flags and Settings
+# -------------------------------------------------
+class Buttons_vals:
+    """Import this class in other Python code to interact programmatically."""
+    first_source = _Latch()
+    stop_recording = _Latch()
+    dance = _Latch()  # NEW
+
+    @classmethod
+    def set_first_source(cls): cls.first_source.set(True)
+    @classmethod
+    def set_stop_recording(cls): cls.stop_recording.set(True)
+    @classmethod
+    def set_dance(cls): cls.dance.set(True)  # NEW
+
+    @classmethod
+    def peek_first_source(cls) -> bool: return cls.first_source.peek()
+    @classmethod
+    def peek_stop_recording(cls) -> bool: return cls.stop_recording.peek()
+    @classmethod
+    def peek_dance(cls) -> bool: return cls.dance.peek()  # NEW
+
+    @classmethod
+    def consume_first_source(cls) -> bool: return cls.first_source.consume()
+    @classmethod
+    def consume_stop_recording(cls) -> bool: return cls.stop_recording.consume()
+    @classmethod
+    def consume_dance(cls) -> bool: return cls.dance.consume()  # NEW
+
+class Mic_UI:
+    """Thread-safe runtime settings."""
+    _mic_threshold = _IntSetting(initial=370, min_v=12, max_v=8000, step=20)
+
+    @classmethod
+    def peek_mic_threshold(cls) -> int:
+        return cls._mic_threshold.get()
+
+    @classmethod
+    def set_mic_threshold(cls, value: int) -> int:
+        return cls._mic_threshold.set(value)
+
 class Telemetry:
     """Live telemetry pushed by other modules (e.g., audio)."""
     _front_mic_energy = _FloatVar(0.0)
@@ -114,7 +116,32 @@ class Telemetry:
     def set_front_mic_energy(cls, value: float) -> float:
         return cls._front_mic_energy.set(value)
 
+# -------------------------------------------------
+# Volume control (cycle via server only; public peek)
+# -------------------------------------------------
+class Volume:
+    """Process-wide volume with cycle(40->90->0). External code gets peek only."""
+    _values = [40, 90, 0]
+    _idx = 0
+    _lock = Lock()
 
+    @classmethod
+    def _set_idx(cls, idx: int) -> int:
+        with cls._lock:
+            cls._idx = idx % len(cls._values)
+            return cls._values[cls._idx]
+
+    @classmethod
+    def cycle(cls) -> int:
+        """Advance to next value and return it. Used by server endpoint only."""
+        with cls._lock:
+            cls._idx = (cls._idx + 1) % len(cls._values)
+            return cls._values[cls._idx]
+
+    @classmethod
+    def peek_volume(cls) -> int:
+        with cls._lock:
+            return cls._values[cls._idx]
 
 # -------------------------------------------------
 # Flask app
@@ -145,6 +172,10 @@ def create_app():
         input[type=range]{-webkit-appearance:none;width:100%;height:6px;border-radius:9999px;background:linear-gradient(90deg,#38bdf8,#a78bfa);outline:none}
         input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:20px;height:20px;border-radius:9999px;background:white;border:2px solid rgba(0,0,0,.15);box-shadow:0 2px 10px rgba(0,0,0,.25)}
         input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:9999px;background:white;border:2px solid rgba(0,0,0,.15)}
+        /* Volume state classes */
+        .vol-40 { background: linear-gradient(to bottom right, #f59e0b, #fbbf24); }   /* amber */
+        .vol-90 { background: linear-gradient(to bottom right, #10b981, #34d399); }  /* emerald */
+        .vol-0  { background: linear-gradient(to bottom right, #475569, #334155); }  /* slate */
       </style>
     </head>
     <body class="min-h-screen text-slate-100" style="background: radial-gradient(1200px 600px at 10% -10%, #1f3a8a, transparent), radial-gradient(1000px 600px at 110% 10%, #7c3aed, transparent), linear-gradient(180deg, #0b1020, #0a0f1e 55%, #0b1324);">
@@ -158,6 +189,7 @@ def create_app():
 
         <main class="glass rounded-2xl p-5 md:p-7 shadow-2xl">
           <div class="grid gap-4">
+            <!-- Speak -->
             <button id="btn-speak"
               class="relative pulse btn-press rounded-xl px-5 py-5 text-lg font-semibold shadow-lg ring-1 ring-white/10
                      bg-gradient-to-br from-indigo-500 to-sky-500 hover:from-indigo-400 hover:to-sky-400
@@ -168,6 +200,7 @@ def create_app():
               Speak First Source
             </button>
 
+            <!-- Stop recording -->
             <button id="btn-stop"
               class="btn-press rounded-xl px-5 py-5 text-lg font-semibold shadow-lg ring-1 ring-white/10
                      bg-gradient-to-br from-rose-500 to-red-600 hover:from-rose-400 hover:to-red-500
@@ -176,6 +209,31 @@ def create_app():
                 <path d="M6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1z"/>
               </svg>
               Stop Recording
+            </button>
+
+            <!-- Dance -->
+            <button id="btn-dance"
+              class="relative pulse btn-press rounded-xl px-5 py-5 text-lg font-semibold shadow-lg ring-1 ring-white/10
+                     bg-gradient-to-br from-fuchsia-500 to-purple-600 hover:from-fuchsia-400 hover:to-purple-500
+                     focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-fuchsia-300 focus:ring-offset-transparent flex items-center justify-center gap-3">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 3a2 2 0 110 4 2 2 0 010-4zm-2 6h4l2 3-2 2 1 6h-2l-1-4-1 4H9l1-6-2-2 2-3z"/>
+              </svg>
+              Dance
+            </button>
+
+            <!-- Volume (cycles 40 -> 90 -> 0) -->
+            <button id="btn-volume"
+              class="btn-press rounded-xl px-5 py-5 text-lg font-semibold shadow-lg ring-1 ring-white/10 vol-40
+                     focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-300 focus:ring-offset-transparent
+                     flex items-center justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M5 9v6h4l5 4V5l-5 4H5z"/>
+                </svg>
+                <span>Volume</span>
+              </div>
+              <span id="vol-label" class="text-sm font-bold">40</span>
             </button>
           </div>
 
@@ -194,14 +252,13 @@ def create_app():
       </div>
 
       <!-- Live Mic Energy -->
-    <div class="mt-6 p-5 rounded-2xl ring-1 ring-white/10 bg-black/20 text-center">
-    <div class="text-xs uppercase tracking-wider text-slate-400">Live Mic Energy</div>
-    <div id="energy-value" class="mt-2 font-extrabold"
-        style="font-size: clamp(2.5rem, 8vw, 5rem); line-height: 1; letter-spacing: 0.02em;">
-        0.0
-    </div>
-    </div>
-
+      <div class="mt-6 p-5 rounded-2xl ring-1 ring-white/10 bg-black/20 text-center">
+        <div class="text-xs uppercase tracking-wider text-slate-400">Live Mic Energy</div>
+        <div id="energy-value" class="mt-2 font-extrabold"
+            style="font-size: clamp(2.5rem, 8vw, 5rem); line-height: 1; letter-spacing: 0.02em;">
+            0.0
+        </div>
+      </div>
 
       <div id="toast" class="fixed bottom-5 left-1/2 -translate-x-1/2 hidden">
         <div class="glass rounded-xl px-4 py-3 shadow-xl text-sm">
@@ -215,6 +272,8 @@ def create_app():
         const toastText = document.getElementById('toast-text');
         const micSlider = document.getElementById('mic-slider');
         const micValue = document.getElementById('mic-value');
+        const volBtn = document.getElementById('btn-volume');
+        const volLabel = document.getElementById('vol-label');
 
         function vibrate(ms=20){ if (navigator.vibrate) navigator.vibrate(ms); }
         function showToast(msg){
@@ -223,6 +282,42 @@ def create_app():
           toastEl.classList.add('opacity-100');
           setTimeout(()=>toastEl.classList.add('opacity-0'), 1200);
           setTimeout(()=>toastEl.classList.add('hidden'), 1600);
+        }
+
+        function setVolButtonStyle(val){
+          volBtn.classList.remove('vol-40','vol-90','vol-0');
+          if(val===40){ volBtn.classList.add('vol-40'); }
+          else if(val===90){ volBtn.classList.add('vol-90'); }
+          else { volBtn.classList.add('vol-0'); }
+          volLabel.textContent = String(val);
+        }
+
+        async function fetchVolume(){
+          try{
+            const res = await fetch('/api/volume'); // protected only if API key set
+            const data = await res.json();
+            if(res.ok && typeof data.value === 'number'){
+              setVolButtonStyle(data.value);
+            }
+          }catch{}
+        }
+
+        async function cycleVolume(){
+          statusEl.textContent = "Cycling volume...";
+          vibrate();
+          try{
+            const res = await fetch('/volume/cycle', { method: 'POST' });
+            const data = await res.json();
+            if(res.ok){
+              setVolButtonStyle(data.value);
+              statusEl.textContent = "Volume: " + data.value;
+              showToast("Volume " + data.value);
+            }else{
+              statusEl.textContent = data.error || 'Error';
+            }
+          }catch{
+            statusEl.textContent = 'Network error';
+          }
         }
 
         async function setFlag(kind){
@@ -253,13 +348,12 @@ def create_app():
 
         async function loadMic(){
           try{
-            const res = await fetch('/api/threshold'); // public GET is protected by API key only on /api/*; server allows if not set
+            const res = await fetch('/api/threshold');
             const data = await res.json();
             if(res.ok && typeof data.value === 'number'){
               micSlider.value = data.value;
               micValue.textContent = data.value;
             } else {
-              // Fallback to default in HTML
               micValue.textContent = micSlider.value;
             }
           }catch{
@@ -288,10 +382,13 @@ def create_app():
 
         document.getElementById('btn-speak').addEventListener('click', ()=>setFlag('first_source'));
         document.getElementById('btn-stop').addEventListener('click', ()=>setFlag('stop_recording'));
+        document.getElementById('btn-dance').addEventListener('click', ()=>setFlag('dance'));
+        volBtn.addEventListener('click', cycleVolume);
 
         document.addEventListener('keydown', (e)=>{
           if(e.key.toLowerCase()==='s') setFlag('first_source');
           if(e.key.toLowerCase()==='x') setFlag('stop_recording');
+          if(e.key.toLowerCase()==='d') setFlag('dance');
         });
 
         // Slider events (snap + save)
@@ -307,30 +404,29 @@ def create_app():
           e.target.value = snapped;
           saveMic(snapped);
         });
+
         async function pollEnergy(){
-        try{
+          try{
             const res = await fetch('/front_energy', { cache: 'no-store' });
             const data = await res.json();
             if(res.ok && typeof data.value !== 'undefined'){
-            const v = Number(data.value);
-            document.getElementById('energy-value').textContent =
-                Number.isFinite(v) ? v.toFixed(1) : '—';
+              const v = Number(data.value);
+              document.getElementById('energy-value').textContent =
+                  Number.isFinite(v) ? v.toFixed(1) : '—';
             }
-        }catch{
-            // ignore transient errors
+          }catch{}
         }
-        }
-
-        // Start polling ~5 times per second
-        setInterval(pollEnergy, 50);
-        pollEnergy();
 
         // Init
+        fetchVolume();   // get initial volume (defaults to 40 server-side)
+        setInterval(pollEnergy, 50);
+        pollEnergy();
         loadMic();
       </script>
     </body>
     </html>
     """
+
     @app.get("/")
     def index():
         return render_template_string(INDEX_HTML)
@@ -344,6 +440,8 @@ def create_app():
             Buttons_vals.set_first_source()
         elif kind == "stop_recording":
             Buttons_vals.set_stop_recording()
+        elif kind == "dance":  # NEW
+            Buttons_vals.set_dance()
         else:
             return jsonify({"error": "unknown flag kind"}), 400
         return jsonify({"ok": True, "kind": kind})
@@ -386,6 +484,7 @@ def create_app():
             "ok": True,
             "first_source": Buttons_vals.peek_first_source(),
             "stop_recording": Buttons_vals.peek_stop_recording(),
+            "dance": Buttons_vals.peek_dance(),  # NEW
         })
 
     @app.get("/api/flags/consume/first_source")
@@ -400,11 +499,17 @@ def create_app():
             return jsonify({"error": "Unauthorized"}), 401
         return jsonify({"ok": True, "value": Buttons_vals.consume_stop_recording()})
 
+    @app.get("/api/flags/consume/dance")
+    def api_consume_dance():  # NEW
+        if not require_api_key():
+            return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"ok": True, "value": Buttons_vals.consume_dance()})
+
     @app.get("/api/health")
     def api_health():
         return jsonify({"ok": True})
 
-     # --- Live energy (unprotected UI poll) ---
+    # --- Live energy (unprotected UI poll) ---
     @app.get("/front_energy")
     def front_energy_public():
         return jsonify({"ok": True, "value": Telemetry.peek_front_mic_energy()})
@@ -415,6 +520,23 @@ def create_app():
         if not require_api_key():
             return jsonify({"error": "Unauthorized"}), 401
         return jsonify({"ok": True, "value": Telemetry.peek_front_mic_energy()})
+
+    # --- Volume endpoints ---
+    @app.post("/volume/cycle")
+    def volume_cycle():
+        """Cycle volume 40 -> 90 -> 0. UI only."""
+        val = Volume.cycle()
+        return jsonify({"ok": True, "value": val})
+
+    @app.get("/api/volume")
+    def api_volume_get():
+        """Peek-only API (protected if API key set)."""
+        if not require_api_key():
+            return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"ok": True, "value": Volume.peek_volume()})
+
+    # Ensure default volume is 40 on server start
+    Volume._set_idx(0)
 
     return app
 

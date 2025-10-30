@@ -47,8 +47,6 @@ class StandardMovement:
         self.animation_service.run(f"animations/Stand/BodyTalk/Speaking/BodyTalk_{animation_num}")
 
     def __call__(self, llm_response):
-        action_json = self.extract_json_from_text(llm_response)
-        animation_type = action_json.get("animation_type")
         dance_type = self.choosing_random_dances()
         print("Now performing ", dance_type)
         self.perform_dance(dance_type)

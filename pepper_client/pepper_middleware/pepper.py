@@ -226,6 +226,10 @@ class Pepper():
         if Buttons_vals.consume_first_source():
             self.first_source_part()
             self.main()
+        elif Buttons_vals.consume_dance():
+            self.standard_movement("")
+            self.main()
+
         height, width = 240, 320
         last_frame = np.zeros((height, width, 3), dtype=np.uint8)
         try:

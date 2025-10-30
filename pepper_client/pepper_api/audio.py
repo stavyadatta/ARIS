@@ -7,7 +7,7 @@ import time
 import sys
 import soundfile as sf
 
-from button_frontend import Buttons_vals, Mic_UI, Telemetry
+from button_frontend import Buttons_vals, Mic_UI, Telemetry, Volume
 
 ENERGY_THRESHOLD = 370
 
@@ -27,7 +27,7 @@ class AudioManager2(object):
 
     def init_service(self, session):
         self.audio_service = session.service("ALAudioDevice")
-        self.audio_service.setOutputVolume(50)
+        # self.audio_service.setOutputVolume(50)
         self.audio_service.enableEnergyComputation()
 
     def calculate_rms_energy(self, audio_data):
@@ -43,14 +43,14 @@ class AudioManager2(object):
         and stop when it's below the threshold for 10 consecutive loops.
         """
         max_below_thresh_loops = 15  # Stop recording after 10 loops below threshold
-
+        self.audio_service.setOutputVolume(Volume.peek_volume())
 
         # Get the front mic energy
         current_energy = self.audio_service.getFrontMicEnergy()
         Telemetry.set_front_mic_energy(current_energy)
         print("The front mic energy is {}".format(current_energy))
 
-        if Buttons_vals.consume_stop_recording(): 
+        if Buttons_vals.consume_stop_recording() or Buttons_vals.peek_dance(): 
             self.process_completion()
             print("Exiting via the Stop button")
 
