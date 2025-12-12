@@ -188,6 +188,18 @@ def create_app():
         </header>
 
         <main class="glass rounded-2xl p-5 md:p-7 shadow-2xl">
+        <!-- Live Mic (moved up) -->
+            <div class="mb-5">
+            <div class="rounded-2xl ring-1 ring-white/10 bg-gradient-to-br from-slate-800/70 to-slate-900/60 glass p-4 flex items-center justify-between">
+                <div class="text-xs uppercase tracking-wider text-slate-300">Live Mic</div>
+                <div id="energy-value"
+                    class="font-extrabold"
+                    style="font-size: clamp(2rem, 7vw, 3.75rem); line-height: 1; letter-spacing: 0.01em;">
+                0.0
+                </div>
+            </div>
+            </div>
+
           <div class="grid gap-4">
             <!-- Speak -->
             <button id="btn-speak"
@@ -249,15 +261,6 @@ def create_app():
 
           <div id="status" class="mt-4 text-sm text-slate-300/90"></div>
         </main>
-      </div>
-
-      <!-- Live Mic Energy -->
-      <div class="mt-6 p-5 rounded-2xl ring-1 ring-white/10 bg-black/20 text-center">
-        <div class="text-xs uppercase tracking-wider text-slate-400">Live Mic Energy</div>
-        <div id="energy-value" class="mt-2 font-extrabold"
-            style="font-size: clamp(2.5rem, 8vw, 5rem); line-height: 1; letter-spacing: 0.02em;">
-            0.0
-        </div>
       </div>
 
       <div id="toast" class="fixed bottom-5 left-1/2 -translate-x-1/2 hidden">
