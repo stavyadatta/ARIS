@@ -148,8 +148,7 @@ def simulate_conversation(persona, msg_target):
                            [{"role": m["role"], "content": m["content"]} for m in messages[-20:]] # Context window 20
         
         try:
-            response = Qwen.send_text(ginny_input_msgs, stream=False, qwen_model="qwen")
-            ginny_content = response.choices[0].message.content
+            ginny_content = Qwen.send_text(ginny_input_msgs, stream=False, qwen_model="qwen")
         except Exception as e:
             print(f"Error generating Ginny response: {e}")
             ginny_content = "I am listening."
@@ -178,8 +177,7 @@ def simulate_conversation(persona, msg_target):
             persona_input_msgs.append({"role": role, "content": m["content"]})
 
         try:
-            response = Qwen.send_text(persona_input_msgs, stream=False, qwen_model="qwen")
-            persona_content = response.choices[0].message.content
+            persona_content = Qwen.send_text(persona_input_msgs, stream=False, qwen_model="qwen")
         except Exception as e:
             print(f"Error generating Persona response: {e}")
             persona_content = "Tell me more."

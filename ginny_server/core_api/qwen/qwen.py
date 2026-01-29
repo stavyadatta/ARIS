@@ -3,6 +3,7 @@ import openai
 import base64
 import cv2
 import numpy as np
+import re
 
 from utils import Neo4j
 
@@ -55,13 +56,20 @@ class _QwenHandler:
             model= qwen_model,
             messages= messages,
             temperature=0.7,
-            max_tokens=500,
+            max_tokens=2048,
             top_p=0.9,
             stream=stream
         )
         if isinstance(response, str):
             raise Exception("Qwen did not respond, returned str ", response)
-        return response
+            
+        if stream:
+             return response
+        
+        content = response.choices[0].message.content
+        # Remove <think> blocks if present
+        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+        return content
 
     def img_text_response(self, image, text, max_tokens=1000, system_prompt=None):
         """
