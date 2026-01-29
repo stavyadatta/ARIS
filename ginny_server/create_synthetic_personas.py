@@ -135,6 +135,9 @@ def simulate_conversation(persona, msg_target):
     You will engage in a long conversation sharing your likes, dislikes, life experiences, and opinions.
     Keep your responses natural, sometimes short, sometimes detailed.
     Do not repeat yourself too much.
+
+    You will not use emojis and stuff, just normal speech, you will be more personal and curious
+    donot act like a chatbot
     """
 
     messages = [] # List of dicts {role, content, message_number}
