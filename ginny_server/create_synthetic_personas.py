@@ -8,6 +8,12 @@ from core_api.qwen.qwen import Qwen
 import torch
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
+from rich.live import Live
+from rich.layout import Layout
+from rich.panel import Panel
+from collections import deque
 
 # Configuration
 START_FACE_ID = 8000
@@ -119,7 +125,8 @@ def get_ginny_system_prompt(person_name, person_attributes="[]", person_relation
         """
 
 def simulate_conversation(persona, msg_target):
-    print(f"Starting simulation for {persona['name']} (Target: {msg_target} messages)")
+    console = Console()
+    console.print(f"Starting simulation for {persona['name']} (Target: {msg_target} messages)")
     
     # Initialize Contexts
     ginny_system = get_ginny_system_prompt(persona['name'])
@@ -131,62 +138,79 @@ def simulate_conversation(persona, msg_target):
     """
 
     messages = [] # List of dicts {role, content, message_number}
+    message_log = deque(maxlen=10)  # Keep last 10 messages for display
+
+    # Setup Rich Layout
+    layout = Layout()
+    layout.split_column(
+        Layout(name="upper", ratio=4),
+        Layout(name="lower", ratio=1)
+    )
     
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TextColumn("{task.completed}/{task.total}")
+    )
+    task_id = progress.add_task(f"[cyan]Simulating {persona['name']}...", total=msg_target)
+    layout["lower"].update(Panel(progress, title="Progress", border_style="green"))
+    layout["upper"].update(Panel("", title="Conversation Log", border_style="blue"))
+
     # Initial Exchange
     # 1. User (Persona) starts
     first_msg = "Hey Ginny"
     messages.append({"role": "user", "content": first_msg})
+    message_log.append(f"[bold green]User (Persona):[/] {first_msg}")
     
     current_count = 1
-    pbar = tqdm(total=msg_target)
-    pbar.update(1)
+    progress.update(task_id, advance=1)
 
-    while current_count < msg_target:
-        # 2. Assistant (Ginny) Responds
-        # Construct prompt for Ginny: System + Recent History
-        ginny_input_msgs = [{"role": "system", "content": ginny_system}] + \
-                           [{"role": m["role"], "content": m["content"]} for m in messages[-20:]] # Context window 20
-        
-        try:
-            ginny_content = Qwen.send_text(ginny_input_msgs, stream=False, qwen_model="qwen")
-        except Exception as e:
-            print(f"Error generating Ginny response: {e}")
-            ginny_content = "I am listening."
+    with Live(layout, refresh_per_second=4, console=console, screen=False):
+        while current_count < msg_target:
+            # Update Log Display
+            log_content = "\n\n".join(message_log)
+            layout["upper"].update(Panel(log_content, title="Conversation Log", border_style="blue"))
 
-        messages.append({"role": "assistant", "content": ginny_content})
-        current_count += 1
-        pbar.update(1)
-        if current_count >= msg_target: break
+            # 2. Assistant (Ginny) Responds
+            ginny_input_msgs = [{"role": "system", "content": ginny_system}] + \
+                               [{"role": m["role"], "content": m["content"]} for m in messages[-20:]] 
+            
+            try:
+                ginny_content = Qwen.send_text(ginny_input_msgs, stream=False, qwen_model="qwen")
+            except Exception as e:
+                ginny_content = "I am listening."
 
-        # 3. User (Persona) Responds
-        # Construct prompt for Persona: System + Recent History
-        # We need to invert roles for the Persona model (Assistant -> User, User -> Assistant) 
-        # because the model plays the 'assistant' role in generation but represents the 'user' in our chat data.
-        # However, simpler is to just feed it the history and tell it "You are the user".
-        # Actually, standard Chat API expects 'user' and 'assistant'. 
-        # If we want the model to generate the "User" response, we treat the "User" as the "Assistant" in the API call context.
-        
-        persona_input_msgs = [{"role": "system", "content": persona_system}]
-        for m in messages[-20:]:
-            # Invert roles: If it was 'user' (Persona previously), it's now 'assistant' from Persona's own POV?
-            # No, standard practice: 
-            # We want model to output "User" content.
-            # So previous "assistant" (Ginny) msg is "user" input to this model.
-            # Previous "user" (Persona) msg is "assistant" (Self) output.
-            role = "user" if m["role"] == "assistant" else "assistant"
-            persona_input_msgs.append({"role": role, "content": m["content"]})
+            messages.append({"role": "assistant", "content": ginny_content})
+            message_log.append(f"[bold yellow]Ginny:[/]{ginny_content}")
+            
+            current_count += 1
+            progress.update(task_id, advance=1)
+            
+            # Update Log Display again
+            log_content = "\n\n".join(message_log)
+            layout["upper"].update(Panel(log_content, title="Conversation Log", border_style="blue"))
 
-        try:
-            persona_content = Qwen.send_text(persona_input_msgs, stream=False, qwen_model="qwen")
-        except Exception as e:
-            print(f"Error generating Persona response: {e}")
-            persona_content = "Tell me more."
+            if current_count >= msg_target: break
 
-        messages.append({"role": "user", "content": persona_content})
-        current_count += 1
-        pbar.update(1)
+            # 3. User (Persona) Responds
+            persona_input_msgs = [{"role": "system", "content": persona_system}]
+            for m in messages[-20:]:
+                role = "user" if m["role"] == "assistant" else "assistant"
+                persona_input_msgs.append({"role": role, "content": m["content"]})
 
-    pbar.close()
+            try:
+                persona_content = Qwen.send_text(persona_input_msgs, stream=False, qwen_model="qwen")
+            except Exception as e:
+                persona_content = "Tell me more."
+
+            messages.append({"role": "user", "content": persona_content})
+            message_log.append(f"[bold green]User (Persona):[/] {persona_content}")
+
+            current_count += 1
+            progress.update(task_id, advance=1)
+
     return messages
 
 def save_to_neo4j(face_id, persona, messages, model):
