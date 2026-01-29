@@ -355,7 +355,7 @@ def main():
         return
 
     # Initialize Embedding Model
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda:2" if torch.cuda.is_available() else "cpu"
     print(f"Loading embedding model on {device}...")
     model = SentenceTransformer("google/embeddinggemma-300m", device=device)
 
