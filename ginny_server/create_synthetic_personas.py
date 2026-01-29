@@ -5,6 +5,9 @@ import time
 from tqdm import tqdm
 from utils import Neo4j, message_format
 from core_api.qwen.qwen import Qwen
+import torch
+import numpy as np
+from sentence_transformers import SentenceTransformer
 
 # Configuration
 START_FACE_ID = 8000
@@ -188,12 +191,12 @@ def simulate_conversation(persona, msg_target):
     pbar.close()
     return messages
 
-def save_to_neo4j(face_id, persona, messages):
+def save_to_neo4j(face_id, persona, messages, model):
     print(f"Saving {len(messages)} messages for {persona['name']} ({face_id}) to Neo4j...")
     
     # 1. Create Person Node
     # Store all messages as JSON in the person node as requested
-    messages_json_data = [{"role": m["role"], "content": m["content"]} for m in messages]
+    messages_json_data = [{"role": m["role"], "content": m["content"], "face_id": face_id} for m in messages]
     messages_json_str = json.dumps(messages_json_data)
     
     person_query = """
@@ -212,6 +215,29 @@ def save_to_neo4j(face_id, persona, messages):
     if not messages:
         return
 
+    # Generate embeddings
+    print("Generating embeddings...")
+    texts = [m["content"] for m in messages]
+    embeddings = model.encode(texts, show_progress_bar=True)
+    
+    # Ensure embedding size is 512
+    if embeddings.shape[1] > 512:
+        print(f"Truncating embeddings from {embeddings.shape[1]} to 512 dimensions...")
+        embeddings = embeddings[:, :512]
+        # Normalize after truncation
+        embeddings = torch.tensor(embeddings)
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        embeddings = embeddings.numpy()
+    elif embeddings.shape[1] < 512:
+         print(f"Warning: Embedding dimension {embeddings.shape[1]} is less than 512. Zero-padding...")
+         # Pad with zeros
+         padding = np.zeros((embeddings.shape[0], 512 - embeddings.shape[1]))
+         embeddings = np.hstack((embeddings, padding))
+         # Normalize (though padding with zeros shouldn't change direction if original was normalized, magnitude changes)
+         embeddings = torch.tensor(embeddings)
+         embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+         embeddings = embeddings.numpy()
+
     # Assign IDs and Numbers
     linked_messages = []
     for i, m in enumerate(messages):
@@ -221,7 +247,7 @@ def save_to_neo4j(face_id, persona, messages):
             "role": m["role"],
             "text": m["content"],
             "face_id": face_id,
-            "embedding": [] # Empty embedding to save time/space or we can generate if needed (skipping for speed)
+            "embedding": embeddings[i].tolist() 
         })
 
     # Cypher for batch creation
@@ -248,7 +274,8 @@ def save_to_neo4j(face_id, persona, messages):
             message_number: msg.message_number,
             role: msg.role,
             text: msg.text,
-            face_id: msg.face_id
+            face_id: msg.face_id,
+            embedding: msg.embedding
         })
         """
         Neo4j.write_query(create_nodes_query, batch=batch)
@@ -305,6 +332,11 @@ def main():
         print(e)
         return
 
+    # Initialize Embedding Model
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Loading embedding model on {device}...")
+    model = SentenceTransformer("google/embeddinggemma-300m", device=device)
+
     for i, persona in enumerate(PERSONAS):
         face_id = f"face_{START_FACE_ID + i}"
         msg_count = MESSAGE_COUNTS[i]
@@ -315,7 +347,7 @@ def main():
         messages = simulate_conversation(persona, msg_count)
         
         # 2. Save
-        save_to_neo4j(face_id, persona, messages)
+        save_to_neo4j(face_id, persona, messages, model)
 
 if __name__ == "__main__":
     main()
