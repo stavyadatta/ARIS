@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 # ---------- Config ----------
-CSV_PATH = "/workspace/7000s_rag_benchmark_results_repitition_filtered.csv"   # change if needed
+# CSV_PATH = "/workspace/7000s_rag_benchmark_results_repitition_filtered.csv"   # change if needed
+CSV_PATH = "/workspace/rag_analysis/7000s_csv_result/7000s_rag_benchmark_results_repitition_filtered.csv"   # change if needed
 SAVE_DIR = Path("./7000s_rag_results_repitition_filtered/")
 TIME_METRICS_MS = ["speaking_ms", "exec_init_ms", "stream_ms", "total_ms"]
 OTHER_METRICS = ["printed_chars"]  # added per your request
@@ -58,8 +59,9 @@ def plot_metric(metric: str):
     if sub.empty:
         return None
 
-    rag_on  = sub[sub["is_rag"] == True].sort_values("message_len")
-    rag_off = sub[sub["is_rag"] == False].sort_values("message_len")
+    rag_on  = sub[sub["is_rag"] == True].sort_values("message_len")[1:-2]
+    rag_off = sub[sub["is_rag"] == False].sort_values("message_len")[1:-2]
+
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
@@ -71,7 +73,7 @@ def plot_metric(metric: str):
     ax.set_title(f"{metric} vs Number of Messages (avg over all user ids & questions)")
     ax.set_xlabel("Number of Messages")
     ax.set_ylabel(nice_ylabel(metric))
-    ax.set_xlim(x_min, x_max)
+    # ax.set_xlim(x_min, x_max)
     ax.grid(True, alpha=0.3)
     ax.legend()
 
