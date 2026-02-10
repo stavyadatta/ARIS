@@ -54,7 +54,7 @@ class AudioManager2(object):
             self.process_completion()
             print("Exiting via the Stop button")
 
-        elif Buttons_vals.peek_first_source():
+        elif Buttons_vals.peek_birthday():
             self.process_completion()
             print("Exit via First Source Button")
 

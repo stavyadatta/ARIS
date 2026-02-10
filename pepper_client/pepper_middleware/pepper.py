@@ -19,7 +19,7 @@ import grpc_communication.pepper_auto_pb2 as pepper_pb2
 from grpc_communication.grpc_pb2 import AudioImgRequest, ImageStreamRequest, TextChunk
 from grpc_communication.grpc_pb2_grpc import MediaServiceStub, SecondaryChannelStub
 from pepper_api import CameraManager, AudioManager2, HeadManager, EyeLEDManager, \
-    SpeechManager, CustomMovement, StandardMovement
+    SpeechManager, CustomMovement, StandardMovement, BirthdayDance
 from utils import SpeechProcessor
 from button_frontend import run_button_server, Buttons_vals
 from pepper_auto import PepperAutoController
@@ -36,10 +36,6 @@ class ResponseStream:
     def __iter__(self):
         # Makes it iterable, so enumerate() works
         return iter(self.chunks)
-
-FIRST_SPEECH =  "M. O. U. between FirstSource and Monash sounds like an exciting opportunity for Research and Innovation to me! Let us sign this agreement!!! "
-def get_first_speech():
-    yield TextChunk(text=FIRST_SPEECH, mode='default')
 
 logging.basicConfig(filename="app.log", level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -60,6 +56,7 @@ class Pepper():
         self.camera_manager = CameraManager(self.session, resolution=5, colorspace=11, fps=30)
 
         self.standard_movement = StandardMovement(self.session)
+        self.birthday_dance = BirthdayDance()
         self.speech_manager = SpeechManager(self.session)
         self.audio_manager = AudioManager2(self.session)
 
@@ -216,15 +213,15 @@ class Pepper():
         
         speech_processor.body_thread.join()
 
-    def first_source_part(self):
+    def birthday_dance_part(self):
         self.do_not_move_head.set()
-        self.process_server_response(get_first_speech())
+        self.birthday_dance.perform(self.session)
         self.do_not_move_head.clear()
 
     def main(self):
         audio_data, sample_rate = self.get_audio()
-        if Buttons_vals.consume_first_source():
-            self.first_source_part()
+        if Buttons_vals.consume_birthday():
+            self.birthday_dance_part()
             self.main()
         elif Buttons_vals.consume_dance():
             self.standard_movement("")
