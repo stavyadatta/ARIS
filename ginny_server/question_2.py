@@ -157,7 +157,7 @@ def find_top_similar_messages_with_chains_optimized(query_text, top_k=20):
     #     print(p)
     #     print("\n")
 
-    response = Grok.send_text(total_prompt, stream=False, grok_model="grok-2-1212")
+    response = Grok.send_text(total_prompt, stream=False, grok_model="grok-3")
     print("\n\nResponse is: ", response.choices[0].message.content)
 
 # Run the function for a sample query
