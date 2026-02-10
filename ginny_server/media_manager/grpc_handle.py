@@ -61,7 +61,7 @@ class MediaManager(MediaServiceServicer):
             print("Error decoding image: {}".format(e))
             return None
 
-    def _getting_response(self, audio_img_item):
+    def _getting_response(self, audio_img_item, skip_face_validation=False):
         if audio_img_item is None:
             return None
         try:
@@ -70,15 +70,18 @@ class MediaManager(MediaServiceServicer):
                 transcription= "You"
             print(f"Transcription: {transcription}")
             if len(transcription) < 2:
-                # If the transcription is less than 2 characters 
-                # it will send a word which will automatically be 
+                # If the transcription is less than 2 characters
+                # it will send a word which will automatically be
                 # categorised as bad input
                 transcription = "You"
 
-            # Get the face information 
+            # Get the face information
             image = audio_img_item.get("image_data")
             cv2.imwrite("/workspace/display_imgs/some.jpg", image)
-            face_id = FaceRecognition.get_most_frequent_face_id()
+            if skip_face_validation:
+                face_id = FaceRecognition.recognize_face_relaxed(image)
+            else:
+                face_id = FaceRecognition.get_most_frequent_face_id()
 
             person_details = Reasoner(transcription, face_id)
             if person_details.get_attribute("state") == "vision":
@@ -135,7 +138,10 @@ class MediaManager(MediaServiceServicer):
                 "description": request.audio_description,
                 "image_data": image
             }
-            pipeline_response = self._getting_response(audio_img_item)
+            pipeline_response = self._getting_response(
+                audio_img_item,
+                skip_face_validation=request.skip_face_validation
+            )
             for resp in pipeline_response:
                 response_text = resp[0]
                 mode = resp[1]

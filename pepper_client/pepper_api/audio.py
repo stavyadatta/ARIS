@@ -50,9 +50,14 @@ class AudioManager2(object):
         Telemetry.set_front_mic_energy(current_energy)
         print("The front mic energy is {}".format(current_energy))
 
-        if Buttons_vals.consume_stop_recording() or Buttons_vals.peek_dance(): 
+        if Buttons_vals.consume_stop_recording():
+            self.stopped_via_button = True
             self.process_completion()
             print("Exiting via the Stop button")
+
+        elif Buttons_vals.peek_dance():
+            self.process_completion()
+            print("Exiting via the Dance button")
 
         elif Buttons_vals.peek_birthday():
             self.process_completion()
@@ -90,6 +95,7 @@ class AudioManager2(object):
         Subscribe the service and return the accumulated audio data.
         """
         self.isProcessingDone = False
+        self.stopped_via_button = False
         self.audio_data_buffer = io.BytesIO()
         self.below_threshold_count = 0
         self.first_high_thresh = False
@@ -104,7 +110,7 @@ class AudioManager2(object):
         # Get accumulated audio data
         self.audio_data_buffer.seek(0)
         audio_data = self.audio_data_buffer.read()
-        return audio_data, self.sample_rate
+        return audio_data, self.sample_rate, self.stopped_via_button
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

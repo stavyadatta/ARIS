@@ -35,6 +35,7 @@ message AudioImgRequest {
     int32 image_width = 8;         // Image width in pixels
     int32 image_height = 9;        // Image height in pixels
     string api_task = 10; // Optional description for the image
+    bool skip_face_validation = 11; // When true, skip face area and side-face checks
 }
 
 // Response message for sending both image and audio data

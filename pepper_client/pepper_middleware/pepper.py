@@ -81,9 +81,9 @@ class Pepper():
 
     def get_audio(self):
         self.eye_led_manager.set_eyes_blue()
-        audio_data, samplerate = self.audio_manager.startProcessing()
+        audio_data, samplerate, stopped_via_button = self.audio_manager.startProcessing()
         self.eye_led_manager.set_eyes_red()
-        return audio_data, samplerate
+        return audio_data, samplerate, stopped_via_button
 
     def make_img_compatible(self):
         raw_image = self.get_image()
@@ -219,7 +219,7 @@ class Pepper():
         self.do_not_move_head.clear()
 
     def main(self):
-        audio_data, sample_rate = self.get_audio()
+        audio_data, sample_rate, stopped_via_button = self.get_audio()
         if Buttons_vals.consume_birthday():
             self.birthday_dance_part()
             self.main()
@@ -250,7 +250,8 @@ class Pepper():
                 image_format="JPEG",
                 image_width=width,
                 image_height=height,
-                api_task="Captured Pepper"
+                api_task="Captured Pepper",
+                skip_face_validation=stopped_via_button
             )
 
             # Send the request to the gRPC server

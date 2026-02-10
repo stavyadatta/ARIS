@@ -185,13 +185,15 @@ class _FaceRecognition:
         x1, y1, x2, y2 = [int(i) for i in face.bbox]
         return abs((x2 - x1) * (y2 - y1))
 
-    def _get_embedding(self, img: np.ndarray) -> np.ndarray:
+    def _get_embedding(self, img: np.ndarray, skip_validation: bool = False) -> np.ndarray:
         """
         Given an image array, detect the face, and generate a face embedding.
         if its a valid face embedding
 
         Args:
             img (np.ndarray): The image array.
+            skip_validation (bool): If True, skip face area and side-face checks
+                                    (still requires a face to be detected).
 
         Returns:
             np.ndarray: The face embedding vector of shape (1, embedding_dim).
@@ -205,17 +207,19 @@ class _FaceRecognition:
         reason = ""
         for face in faces:
             embedding = face.embedding
-            area = self._get_face_area(face)
-            is_side_face = self._is_side_face(face, cam_matrix)
-            
-            # Check if Area is valid
-            if area < 4500:
-                reason = "Area too small, {}".format(area)
-                continue
 
-            if is_side_face:
-                reason = "Side face was detected"
-                continue
+            if not skip_validation:
+                area = self._get_face_area(face)
+                is_side_face = self._is_side_face(face, cam_matrix)
+
+                # Check if Area is valid
+                if area < 4500:
+                    reason = "Area too small, {}".format(area)
+                    continue
+
+                if is_side_face:
+                    reason = "Side face was detected"
+                    continue
 
             embedding = embedding.reshape(1, -1)  # shape: (1, embedding_dim)
             return embedding
@@ -291,15 +295,19 @@ class _FaceRecognition:
     ############################################################################
     #               Key Changes: Separate "recognize" vs. "enroll"             #
     ############################################################################
-    def recognize_face_no_enroll(self, img: np.ndarray) -> Tuple[Optional[str], np.ndarray]:
+    def recognize_face_no_enroll(self, img: np.ndarray, skip_validation: bool = False) -> Tuple[Optional[str], np.ndarray]:
         """
         Attempt to recognize the face in the image but DO NOT enroll new faces.
         This method returns the recognized ID (or None if unknown) AND the embedding.
 
+        Args:
+            img (np.ndarray): The image array.
+            skip_validation (bool): If True, skip face area and side-face checks.
+
         Returns:
             (face_id, embedding)
         """
-        embedding = self._get_embedding(img)
+        embedding = self._get_embedding(img, skip_validation=skip_validation)
         face_id = self._match_face(embedding)
         return face_id, embedding
 
@@ -386,6 +394,29 @@ class _FaceRecognition:
         logging.info(f"Most frequent recognized ID is: {most_frequent_id} "
                     f"(count={max_freq}, none_count={none_count})")
         return most_frequent_id
+
+    def recognize_face_relaxed(self, img: np.ndarray) -> Optional[str]:
+        """
+        One-shot face recognition with relaxed validation (no area/side-face checks).
+        Still requires a face to be detected. If recognized returns face_id,
+        if unknown enrolls as new face, if no face returns None.
+
+        Args:
+            img (np.ndarray): The image array.
+
+        Returns:
+            Optional[str]: The face ID or None if no face detected.
+        """
+        try:
+            face_id, embedding = self.recognize_face_no_enroll(img, skip_validation=True)
+            if face_id is not None:
+                return face_id
+            # Unknown face — enroll it
+            new_id = self.enroll_face(embedding, img)
+            logging.info(f"Relaxed recognition: enrolled new face {new_id}")
+            return new_id
+        except ValueError:
+            return None
 
     def get_face_box(self, img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
         """
