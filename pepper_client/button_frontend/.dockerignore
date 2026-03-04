@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+.git
+.gitignore
+button.py
+local_bridge.py
+__init__.py
+*.md

@@ -1,8 +1,17 @@
 import os
 import time
+import hashlib
 from collections import deque
 from threading import Lock
-from flask import Flask, request, jsonify, render_template_string
+from flask import (
+    Flask,
+    request,
+    jsonify,
+    render_template_string,
+    redirect,
+    make_response,
+)
+
 
 # -------------------------------------------------
 # Cloud State
@@ -11,23 +20,16 @@ class CloudState:
     # Command queue: (command_name, timestamp)
     _command_queue = deque()
     _queue_lock = Lock()
-    
+
     # Telemetry cache
-    _telemetry = {
-        "front_energy": 0.0,
-        "volume": 40,
-        "mic_threshold": 370
-    }
+    _telemetry = {"front_energy": 0.0, "volume": 40, "mic_threshold": 370}
     _telemetry_lock = Lock()
 
     @classmethod
     def add_command(cls, kind: str):
         with cls._queue_lock:
             # Add command with timestamp
-            cls._command_queue.append({
-                "kind": kind,
-                "ts": time.time()
-            })
+            cls._command_queue.append({"kind": kind, "ts": time.time()})
 
     @classmethod
     def get_pending_commands(cls):
@@ -52,19 +54,114 @@ class CloudState:
         with cls._telemetry_lock:
             return cls._telemetry.copy()
 
+
 # -------------------------------------------------
 # Flask app
 # -------------------------------------------------
 def create_app():
     app = Flask(__name__)
     API_KEY = os.getenv("FLAGS_API_KEY", "").strip()
+    SITE_PASSWORD = os.getenv("SITE_PASSWORD", "vl4ai")
+    SECRET_KEY = os.getenv("SECRET_KEY", "ginny-ctrl-k8x2m")
+    app.secret_key = SECRET_KEY
+
+    # Signed auth token: cookie value that proves login
+    AUTH_TOKEN = hashlib.sha256(f"{SITE_PASSWORD}:{SECRET_KEY}".encode()).hexdigest()[
+        :32
+    ]
 
     def require_api_key():
         if not API_KEY:
             return True
         return request.headers.get("X-API-Key") == API_KEY
 
-    # ---------- Fancy UI (Same as button.py) ----------
+    def is_authenticated() -> bool:
+        return request.cookies.get("ginny_auth") == AUTH_TOKEN
+
+    @app.before_request
+    def check_auth():
+        # Device-facing API endpoints — no password, protected by API key
+        if request.path.startswith("/api/"):
+            return None
+        # Login page itself
+        if request.path == "/login":
+            return None
+        # Everything else requires the auth cookie
+        if not is_authenticated():
+            return redirect("/login")
+        return None
+
+    # ---------- Login Page ----------
+    LOGIN_HTML = """
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>GINNY — Login</title>
+      <script src="https://cdn.tailwindcss.com"></script>
+      <style>
+        .glass{background:rgba(17,24,39,.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.06)}
+      </style>
+    </head>
+    <body class="min-h-screen flex items-center justify-center text-slate-100"
+          style="background: radial-gradient(1200px 600px at 10% -10%, #1f3a8a, transparent),
+                 radial-gradient(1000px 600px at 110% 10%, #7c3aed, transparent),
+                 linear-gradient(180deg, #0b1020, #0a0f1e 55%, #0b1324);">
+      <div class="w-full max-w-sm px-4">
+        <div class="glass rounded-2xl p-8 shadow-2xl">
+          <h1 class="text-2xl font-extrabold text-center mb-1">
+            <span class="bg-gradient-to-r from-indigo-300 via-sky-200 to-violet-300 bg-clip-text text-transparent">
+              GINNY control
+            </span>
+          </h1>
+          <p class="text-slate-400 text-xs text-center mb-6">Enter password to continue</p>
+          {% if error %}
+          <div class="mb-4 text-sm text-center text-rose-400">{{ error }}</div>
+          {% endif %}
+          <form method="POST" action="/login" class="space-y-4">
+            <input name="password" type="password" autofocus autocomplete="current-password"
+                   placeholder="Password"
+                   class="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3
+                          text-slate-100 placeholder-slate-500 focus:outline-none
+                          focus:ring-2 focus:ring-sky-400/60 focus:border-transparent" />
+            <button type="submit"
+                    class="w-full rounded-xl px-4 py-3 font-semibold shadow-lg
+                           bg-gradient-to-br from-indigo-500 to-sky-500 hover:from-indigo-400 hover:to-sky-400
+                           focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-300
+                           focus:ring-offset-transparent active:translate-y-px active:scale-[.99]">
+              Enter
+            </button>
+          </form>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+
+    @app.get("/login")
+    def login_page():
+        if is_authenticated():
+            return redirect("/")
+        return render_template_string(LOGIN_HTML, error=None)
+
+    @app.post("/login")
+    def login_submit():
+        password = (request.form.get("password") or "").strip()
+        if password == SITE_PASSWORD:
+            resp = make_response(redirect("/"))
+            resp.set_cookie(
+                "ginny_auth",
+                AUTH_TOKEN,
+                max_age=365 * 24 * 3600,  # 1 year
+                httponly=True,
+                samesite="Lax",
+                secure=True,
+            )
+            return resp
+        return render_template_string(LOGIN_HTML, error="Wrong password"), 401
+
+    # ---------- Fancy UI ----------
     INDEX_HTML = """
     <!doctype html>
     <html lang="en">
@@ -221,9 +318,6 @@ def create_app():
             const res = await fetch('/volume/cycle', { method: 'POST' });
             const data = await res.json();
             if(res.ok){
-              // Optimistic update or wait for poll? 
-              // For now, we just rely on the response which confirms the command was queued.
-              // The actual volume update will come via telemetry polling.
               statusEl.textContent = "Volume cycle queued";
               showToast("Volume cycle queued");
             }else{
@@ -395,12 +489,14 @@ def create_app():
     @app.get("/front_energy")
     def front_energy_public():
         telemetry = CloudState.get_telemetry()
-        return jsonify({
-            "ok": True, 
-            "value": telemetry["front_energy"],
-            "volume": telemetry["volume"],
-            "mic_threshold": telemetry["mic_threshold"]
-        })
+        return jsonify(
+            {
+                "ok": True,
+                "value": telemetry["front_energy"],
+                "volume": telemetry["volume"],
+                "mic_threshold": telemetry["mic_threshold"],
+            }
+        )
 
     # ---------- Device Endpoints (Poll & Push) ----------
     @app.get("/api/poll_commands")
@@ -418,9 +514,11 @@ def create_app():
 
     return app
 
+
 def run_cloud_server(host="0.0.0.0", port=8004):
     app = create_app()
     app.run(host=host, port=port)
+
 
 if __name__ == "__main__":
     run_cloud_server()
