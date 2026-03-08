@@ -8,7 +8,8 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from button import Buttons_vals, Mic_UI, Telemetry, Volume
 
-CLOUD_URL = os.getenv("CLOUD_URL", "http://localhost:8004").rstrip('/')
+# Set CLOUD_URL env var, or use default custom domain
+CLOUD_URL = os.getenv("CLOUD_URL", "https://ginny.stavyadatta.com").rstrip('/')
 
 def poll_commands():
     try:

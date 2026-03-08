@@ -1,0 +1,12 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements-cloud.txt requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY cloud_server.py .
+
+EXPOSE 8004
+
+CMD ["gunicorn", "--bind", "0.0.0.0:8004", "--workers", "1", "--threads", "4", "cloud_server:create_app()"]
