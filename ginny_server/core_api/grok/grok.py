@@ -37,7 +37,7 @@ class _GrokHandler:
         return encoded_image
 
 
-    def send_text(self, messages: list[dict], stream: bool, img=None, grok_model="grok-2"):
+    def send_text(self, messages: list[dict], stream: bool, img=None, grok_model="grok-3"):
         """
             :param messages: A dictionary of messages for additional context to be 
              provided to the model for benefit
@@ -77,7 +77,7 @@ class _GrokHandler:
         try:
             # Start streaming response
             response = self.client.chat.completions.create(
-                model="grok-2-vision-1212",
+                model="grok-3-vision-1212",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     img_text_dict
@@ -122,7 +122,7 @@ class _GrokHandler:
         try:
             # Start streaming response
             response = self.client.chat.completions.create(
-                model="grok-2-vision-1212",
+                model="grok-3-vision-1212",
                 messages=[{"role": "system", "content": system_prompt}] + messages + [last_dict],
                 max_tokens=max_tokens,
                 stream=True
