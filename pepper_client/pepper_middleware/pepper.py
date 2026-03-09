@@ -19,7 +19,7 @@ import grpc_communication.pepper_auto_pb2 as pepper_pb2
 from grpc_communication.grpc_pb2 import AudioImgRequest, ImageStreamRequest, TextChunk
 from grpc_communication.grpc_pb2_grpc import MediaServiceStub, SecondaryChannelStub
 from pepper_api import CameraManager, AudioManager2, HeadManager, EyeLEDManager, \
-    SpeechManager, CustomMovement, StandardMovement, BirthdayDance
+    SpeechManager, CustomMovement, StandardMovement, BirthdayDance, HandManager
 from utils import SpeechProcessor
 from button_frontend import run_button_server, Buttons_vals, run_bridge
 from pepper_auto import PepperAutoController
@@ -68,6 +68,7 @@ class Pepper():
         self.posture_service = self.session.service("ALRobotPosture")
         self.head_manager = HeadManager(self.session)
         self.custom_movement = CustomMovement(self.session, self.posture_service)
+        self.hand_manager = HandManager(self.session)
 
         self.session.registerService("CameraManager", self.camera_manager)
         self.life_service.setAutonomousAbilityEnabled("All", False)
@@ -75,6 +76,8 @@ class Pepper():
         self.not_send_imgs = Event()
 
         self.do_not_move_head = Event()
+
+        self.default_posture()
 
     def get_image(self):
         return self.camera_manager.get_image(raw=True)
@@ -106,8 +109,9 @@ class Pepper():
         # Return the OpenCV-compatible NumPy array
         return cv2_image
     
-    def center_head(self):
-        pass
+    def default_posture(self):
+        """Resets head and hip to the default resting position."""
+        self.head_manager.rotate_head_abs()
 
     def img_stream(self):
         cv2_image = self.make_img_compatible()
@@ -181,7 +185,7 @@ class Pepper():
                         self.head_manager.rotate_head(forward=float(vertical_ratio), left=float(horizontal_ratio))
                 elif self.is_zero_list(box) and person_missing > 30:
                     person_missing = 0
-                    self.head_manager.rotate_head_abs()
+                    self.default_posture()
         except KeyboardInterrupt:
             logger.info("Stopping the head management")
             raise KeyboardInterrupt
@@ -209,13 +213,44 @@ class Pepper():
         speech_processor.is_running = False
         speaker_thread.join()
         speech_processor.to_execute_movement_thread = False
-        self.posture_service.goToPosture("StandInit", 0.2)
-        
+        self.default_posture()
+
         speech_processor.body_thread.join()
 
     def birthday_dance_part(self):
         self.do_not_move_head.set()
         self.birthday_dance.perform(self.session)
+        self.do_not_move_head.clear()
+
+    def ask_question_with_audio(self):
+        """Play the pre-recorded question audio while performing body talk animations."""
+        QUESTION_AUDIO_PATH = "/home/nao/reza_question.wav"
+        QUESTION_DURATION = 10  # seconds – adjust to match actual audio length
+
+        audio_player = self.session.service("ALAudioPlayer")
+        posture_service = self.session.service("ALRobotPosture")
+
+        self.do_not_move_head.set()
+
+        # Start the audio (non-blocking so we can do body talk over it)
+        file_id = audio_player.loadFile(QUESTION_AUDIO_PATH)
+        audio_player.play(file_id, _async=True)
+
+        # Cycle through body talk animations while audio plays
+        movement_num = 1
+        end_time = time.time() + QUESTION_DURATION
+        while time.time() < end_time:
+            try:
+                self.standard_movement.perform_body_speech(movement_num)
+            except Exception:
+                pass
+            movement_num += 1
+            if movement_num > 16:
+                movement_num = 1
+            time.sleep(0.3)
+
+        audio_player.stopAll()
+        self.hand_manager.lower_right_hand()
         self.do_not_move_head.clear()
 
     def main(self):
@@ -225,6 +260,17 @@ class Pepper():
             self.main()
         elif Buttons_vals.consume_dance():
             self.standard_movement("")
+            self.main()
+        elif Buttons_vals.consume_raise_hand():
+            self.do_not_move_head.set()
+            self.hand_manager.raise_right_hand()
+            self.do_not_move_head.clear()
+            self.main()
+        elif Buttons_vals.consume_ask_question():
+            self.ask_question_with_audio()
+            self.main()
+        elif Buttons_vals.consume_say_thanks():
+            self.speech_manager.say("Thank you very much, I really appreciate it!")
             self.main()
 
         height, width = 240, 320
@@ -276,6 +322,7 @@ class Pepper():
         del self.speech_manager
         del self.audio_manager
         del self.head_manager
+        del self.hand_manager
         del self.eye_led_manager
         self.session.close()
         print("Pepper resources have been cleaned up.")
