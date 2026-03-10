@@ -30,10 +30,24 @@ class SoundTracker:
 
     def run(self):
         """Main loop — intended for Thread(target=tracker.run)."""
-        logger.info("Sound tracker thread started (SRP-PHAT)")
+        logger.info("Sound tracker thread started (SRP-PHAT-HSDA)")
 
         while self.shared_state.running:
-            chunk = self.shared_state.pop_srp_audio()
+            # Drain the queue and only process the LATEST buffer.
+            # If locate() takes longer than ~170ms, buffers pile up.
+            # Processing stale audio is pointless — we only care about
+            # the most recent sound direction.
+            chunk = None
+            skipped = 0
+            while True:
+                newest = self.shared_state.pop_srp_audio()
+                if newest is None:
+                    break
+                if chunk is not None:
+                    skipped += 1
+                chunk = newest
+            if skipped > 0:
+                logger.debug("Skipped %d stale SRP buffers", skipped)
 
             if chunk is None:
                 time.sleep(0.01)

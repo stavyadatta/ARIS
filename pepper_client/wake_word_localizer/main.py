@@ -10,7 +10,9 @@ from threading import Thread
 from wake_word_localizer.config import (
     PEPPER_IP, PEPPER_PORT, PI_LISTEN_IP, PI_LISTEN_PORT,
     VOSK_MODEL_PATH, WAKE_WORDS, FUZZY_THRESHOLD,
-    SOUND_LOC_EXPIRY, SRP_NFFT, SRP_ANGLE_STEP, SRP_MIN_CONFIDENCE,
+    SOUND_LOC_EXPIRY, SRP_NFFT, SRP_COARSE_STEP, SRP_FINE_STEP,
+    SRP_REFINE_RADIUS, SRP_MIC_ACCEPTANCE, SRP_MSW_DELTA,
+    SRP_ENABLE_MSW, SRP_MAX_FRAMES, SRP_MIN_CONFIDENCE,
     MOVEMENT_COOLDOWN, MOVEMENT_MODE, HEAD_SPEED, SAMPLE_RATE,
 )
 from wake_word_localizer.shared_state import SharedState
@@ -60,6 +62,11 @@ def main():
     motion.wakeUp()
     logger.info("Robot is awake")
 
+    # Set head to neutral position (looking straight ahead)
+    posture = session.service("ALRobotPosture")
+    posture.goToPosture("StandInit", 0.5)
+    logger.info("Robot in StandInit posture")
+
     # Shared state
     state = SharedState()
 
@@ -82,7 +89,13 @@ def main():
     # ---- SRP-PHAT localizer ----
     srp_localizer = SRPPHATLocalizer(
         nfft=SRP_NFFT,
-        angle_step_deg=SRP_ANGLE_STEP,
+        coarse_step_deg=SRP_COARSE_STEP,
+        fine_step_deg=SRP_FINE_STEP,
+        refine_radius_deg=SRP_REFINE_RADIUS,
+        mic_acceptance_deg=SRP_MIC_ACCEPTANCE,
+        msw_delta=SRP_MSW_DELTA,
+        max_frames=SRP_MAX_FRAMES,
+        enable_msw=SRP_ENABLE_MSW,
     )
 
     # ---- Workers ----
