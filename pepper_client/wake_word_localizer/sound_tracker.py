@@ -5,87 +5,58 @@ logger = logging.getLogger(__name__)
 
 
 class SoundTracker:
-    """Polls ALSoundLocalization/SoundLocated from ALMemory and stores
-    the latest direction in SharedState.
+    """Consumes 4-channel audio from SharedState and runs SRP-PHAT to
+    estimate the direction of arrival, storing the result back in
+    SharedState for the MovementExecutor.
 
-    Pattern from: sound_system/sound_localisation.py
-    - subscribe via sound_localization.subscribe("SoundLocated")
-    - read via memory.getData("ALSoundLocalization/SoundLocated")
-    - data format: [timestamp, [azimuth, elevation, confidence], energy]
+    Replaces the previous ALSoundLocalization polling approach with a
+    custom SRP-PHAT implementation that processes raw microphone data.
+
+    Data flow
+    ---------
+    SRPAudioService  -->  SharedState.srp_audio queue
+                              |
+                     SoundTracker.run() pops each buffer
+                              |
+                     SRPPHATLocalizer.locate(buffer)
+                              |
+                     SharedState.update_sound_location(az, el, conf)
     """
 
-    def __init__(self, session, shared_state, poll_interval=0.1,
-                 min_confidence=0.0, sensitivity=0.8):
-        self.memory = session.service("ALMemory")
-        self.sound_localization = session.service("ALSoundLocalization")
+    def __init__(self, shared_state, srp_localizer, min_confidence=1.5):
         self.shared_state = shared_state
-        self.poll_interval = poll_interval
+        self.localizer = srp_localizer
         self.min_confidence = min_confidence
-        self.sensitivity = sensitivity
-        # Track the last raw data to avoid re-processing identical readings
-        self._last_raw_data = None
 
     def run(self):
-        """Main polling loop - intended for Thread(target=tracker.run)."""
-        logger.info("Sound tracker thread started")
-        self.sound_localization.subscribe("SoundLocated")
-        self.sound_localization.setParameter("Sensibility", self.sensitivity)
-        logger.info("Subscribed to ALSoundLocalization (sensitivity=%.1f)", self.sensitivity)
+        """Main loop — intended for Thread(target=tracker.run)."""
+        logger.info("Sound tracker thread started (SRP-PHAT)")
 
-        try:
-            while self.shared_state.running:
-                try:
-                    data = self.memory.getData("ALSoundLocalization/SoundLocated")
+        while self.shared_state.running:
+            chunk = self.shared_state.pop_srp_audio()
 
-                    if not data or len(data) < 2:
-                        time.sleep(self.poll_interval)
-                        continue
+            if chunk is None:
+                time.sleep(0.01)
+                continue
 
-                    # Skip if this is the exact same reading as last time
-                    # if data == self._last_raw_data:
-                    #     time.sleep(self.poll_interval)
-                    #     continue
-                    # self._last_raw_data = data
-                    # logger.info("The program is entering ALSoundLocalization thread")
-
-                    # Parse: data = [timestamp_or_id, [azimuth, elevation, confidence], ...]
-                    sound_info = data[1]
-                    if not sound_info or len(sound_info) < 3:
-                        logger.warning("Unexpected sound data format: %s", data)
-                        time.sleep(self.poll_interval)
-                        continue
-
-                    azimuth = sound_info[0]
-                    elevation = sound_info[1]
-                    confidence = sound_info[2]
-
-                    # logger.info(
-                    #     "The Sound location data is az=%.2f, el=%.2f and conf=%.2f",
-                    #     azimuth, elevation, confidence
-                    #
-                    # )
-
-                    if confidence >= self.min_confidence:
-                        self.shared_state.update_sound_location(
-                            azimuth, elevation, confidence
-                        )
-                        # logger.info(
-                        #     "New sound location: az=%.2f el=%.2f conf=%.2f",
-                        #     azimuth, elevation, confidence
-                        # )
-                    else:
-                        logger.debug(
-                            "Sound below confidence threshold: conf=%.2f < %.2f",
-                            confidence, self.min_confidence
-                        )
-
-                except Exception as e:
-                    logger.warning("Sound tracker poll error: %s", e)
-
-                time.sleep(self.poll_interval)
-        finally:
             try:
-                self.sound_localization.unsubscribe("SoundLocated")
-            except Exception:
-                pass
-            logger.info("Sound tracker thread stopped")
+                azimuth, elevation, confidence = self.localizer.locate(chunk)
+
+                logger.debug(
+                    "SRP-PHAT: az=%.2f° conf=%.2f",
+                    azimuth * 57.2958, confidence,
+                )
+
+                if confidence >= self.min_confidence:
+                    self.shared_state.update_sound_location(
+                        azimuth, elevation, confidence
+                    )
+                    logger.info(
+                        "Sound direction updated: az=%.1f° conf=%.2f",
+                        azimuth * 57.2958, confidence,
+                    )
+
+            except Exception as e:
+                logger.warning("SRP-PHAT error: %s", e)
+
+        logger.info("Sound tracker thread stopped")

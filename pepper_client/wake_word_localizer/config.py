@@ -16,18 +16,18 @@ VOSK_MODEL_PATH = os.path.join(os.path.dirname(__file__), "model")
 # Wake word variants (all lowercase)
 WAKE_WORDS = {
     "ginny", "jeanie", "jenny", "genie", "jeannie", "jinny",
-    "ginnie", "genny", "jenna", "gina",
+    "ginnie", "genny", "jenna", "gina", "jimmy", "gimmy",
 }
 
 # Fuzzy matching threshold (0-100). 75 catches Vosk transcription variants
 # while rejecting unrelated words.
 FUZZY_THRESHOLD = 75
 
-# Sound localization
-SOUND_POLL_INTERVAL = 0.0   # seconds between ALSoundLocalization polls
-SOUND_LOC_EXPIRY = 3.0      # ignore sound locations older than this (seconds)
-MIN_CONFIDENCE = 0.0         # minimum confidence to accept a sound direction
-SOUND_SENSITIVITY = 0.8      # ALSoundLocalization sensitivity parameter
+# SRP-PHAT sound localization
+SOUND_LOC_EXPIRY = 3.0       # ignore sound locations older than this (seconds)
+SRP_NFFT = 1024              # FFT window size for SRP-PHAT (samples at 48kHz)
+SRP_ANGLE_STEP = 1           # azimuth grid resolution in degrees
+SRP_MIN_CONFIDENCE = 1.5     # minimum peak-to-mean ratio to accept a direction
 
 # Movement
 MOVEMENT_COOLDOWN = 5.0      # seconds between consecutive wake-word movements
