@@ -224,8 +224,8 @@ class Pepper():
 
     def ask_question_with_audio(self):
         """Play the pre-recorded question audio while performing body talk animations."""
-        QUESTION_AUDIO_PATH = "/home/nao/reza_question.wav"
-        QUESTION_DURATION = 10  # seconds – adjust to match actual audio length
+        QUESTION_AUDIO_PATH = "/home/nao/reza_question_slow.wav"
+        QUESTION_DURATION = 12  # seconds – adjust to match actual audio length
 
         audio_player = self.session.service("ALAudioPlayer")
         posture_service = self.session.service("ALRobotPosture")
