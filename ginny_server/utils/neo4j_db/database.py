@@ -402,3 +402,83 @@ class _Neo4j:
     def adding_text2relationship_checker(self, person_details: PersonDetails):
         latest_usr_msg = person_details.get_latest_user_message()
         self.relationship_queue.put(latest_usr_msg)
+
+    # ============ Speaker Recognition (Phase 1) ============
+
+    def ensure_speaker_vector_index(self):
+        """
+        Create a vector index for speaker embeddings if not exists.
+        Requires Neo4j 5.11+.
+        """
+        self.write_query("""
+            CREATE VECTOR INDEX speaker_embeddings IF NOT EXISTS
+            FOR (s:Speaker) ON (s.embedding)
+            OPTIONS { indexConfig: {
+                `vector.dimensions`: 192,
+                `vector.similarity_function`: 'cosine'
+            }}
+        """)
+
+    def match_speaker_embedding(self, embedding, threshold=0.6):
+        """
+        Query speaker_embeddings vector index for nearest match.
+        Returns: (speaker_id, score) or (None, 0.0)
+        """
+        results = self.read_query("""
+            CALL db.index.vector.queryNodes(
+                'speaker_embeddings',
+                1,
+                $query_embedding
+            ) YIELD node AS speaker, score
+            RETURN speaker.speaker_id AS speaker_id, score
+        """, query_embedding=embedding)
+
+        if results and results[0]["score"] >= threshold:
+            return (results[0]["speaker_id"], results[0]["score"])
+        return (None, 0.0)
+
+    def enroll_speaker(self, speaker_id, embedding):
+        """
+        Create a new Speaker node with embedding.
+        Uses UUID-based speaker_id to avoid race conditions.
+        """
+        self.write_query("""
+            CREATE (s:Speaker {
+                speaker_id: $speaker_id,
+                embedding: $embedding,
+                created_at: datetime()
+            })
+        """, speaker_id=speaker_id, embedding=embedding)
+        return speaker_id
+
+    def link_speaker_to_person(self, speaker_id, face_id):
+        """
+        Link a Speaker node to an existing Person node.
+        Creates HAS_VOICE relationship and sets speaker_id on Person.
+        """
+        self.write_query("""
+            MATCH (p:Person {face_id: $face_id})
+            MATCH (s:Speaker {speaker_id: $speaker_id})
+            MERGE (p)-[:HAS_VOICE]->(s)
+            SET p.speaker_id = $speaker_id
+        """, speaker_id=speaker_id, face_id=face_id)
+
+    def get_speaker_by_person(self, face_id):
+        """Get the speaker_id for a Person node (if linked). Returns speaker_id or None."""
+        results = self.read_query("""
+            MATCH (p:Person {face_id: $face_id})
+            RETURN p.speaker_id AS speaker_id
+        """, face_id=face_id)
+        if results and results[0].get("speaker_id"):
+            return results[0]["speaker_id"]
+        return None
+
+    def get_person_by_speaker(self, speaker_id):
+        """Get the face_id for a Person linked to a Speaker node. Returns face_id or None."""
+        results = self.read_query("""
+            MATCH (p:Person)-[:HAS_VOICE]->(s:Speaker {speaker_id: $speaker_id})
+            RETURN p.face_id AS face_id
+        """, speaker_id=speaker_id)
+        if results and results[0].get("face_id"):
+            return results[0]["face_id"]
+        return None

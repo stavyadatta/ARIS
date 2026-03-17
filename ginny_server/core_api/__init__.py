@@ -9,6 +9,8 @@ from .relationship_checker import _RelationshipChecker
 from .attribute_finder import _AttributeFinder
 from .clip_classification import _ClipClassification
 from .trackers import OCSort
+from .speaker_recognition import _SpeakerRecognition
+from .diarization import _Diarization
 
 FaceRecognition = _FaceRecognition()
 WhisperSpeech2Text = _WhisperSpeech2Text()
@@ -21,18 +23,22 @@ Grok = _GrokHandler()
 RelationshipChecker = _RelationshipChecker()
 AttributeFinder = _AttributeFinder()
 ClipClassification = _ClipClassification()
+SpeakerRecognition = _SpeakerRecognition()
+Diarization = _Diarization()
 
-__all__ = ["FaceRecognition", 
-           "WhisperSpeech2Text", 
-           "Llama", 
-           "PersonDetectionCropper", 
-           "YOLODetector", 
-           "Claude", 
-           "ChatGPT", 
+__all__ = ["FaceRecognition",
+           "WhisperSpeech2Text",
+           "Llama",
+           "PersonDetectionCropper",
+           "YOLODetector",
+           "Claude",
+           "ChatGPT",
            "Grok",
            "RelationshipChecker",
            "AttributeFinder",
-           "ClipClassification"
+           "ClipClassification",
+           "SpeakerRecognition",
+           "Diarization"
            ]
 
 

@@ -230,3 +230,72 @@ class MediaService(object):
             grpc__pb2.QueueRemoval.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+
+class SpeakerRecognitionServiceStub(object):
+    """============ Speaker Recognition (Phase 1) ============
+
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.RecognizeSpeakers = channel.stream_stream(
+                '/SpeakerRecognitionService/RecognizeSpeakers',
+                request_serializer=grpc__pb2.SpeakerAudioSegment.SerializeToString,
+                response_deserializer=grpc__pb2.SpeakerResult.FromString,
+                )
+
+
+class SpeakerRecognitionServiceServicer(object):
+    """============ Speaker Recognition (Phase 1) ============
+
+    """
+
+    def RecognizeSpeakers(self, request_iterator, context):
+        """Bidirectional streaming: client sends VAD audio segments,
+        server returns speaker identification results
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_SpeakerRecognitionServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'RecognizeSpeakers': grpc.stream_stream_rpc_method_handler(
+                    servicer.RecognizeSpeakers,
+                    request_deserializer=grpc__pb2.SpeakerAudioSegment.FromString,
+                    response_serializer=grpc__pb2.SpeakerResult.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'SpeakerRecognitionService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+
+
+ # This class is part of an EXPERIMENTAL API.
+class SpeakerRecognitionService(object):
+    """============ Speaker Recognition (Phase 1) ============
+
+    """
+
+    @staticmethod
+    def RecognizeSpeakers(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(request_iterator, target, '/SpeakerRecognitionService/RecognizeSpeakers',
+            grpc__pb2.SpeakerAudioSegment.SerializeToString,
+            grpc__pb2.SpeakerResult.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)

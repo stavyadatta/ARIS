@@ -1,0 +1,38 @@
+# Requirements for standalone speaker_server.py
+# Creates a conda env with face + voice recognition only
+#
+# Setup:
+#   conda create -n speaker python=3.10 -y
+#   conda activate speaker
+#   pip install -r requirements-speaker.txt
+
+# ---- Core ML ----
+torch==2.2.1
+torchaudio==2.2.1
+torchvision==0.17.1
+
+# ---- Face Recognition (InsightFace) ----
+insightface==0.7.3
+onnxruntime-gpu==1.16.3
+opencv-python==4.10.0.84
+
+# ---- Speaker Recognition (ERes2NetV2) ----
+modelscope
+
+# ---- Diarization (DiariZen / pyannote) ----
+pyannote.audio==3.1.1
+
+# ---- Database ----
+neo4j==5.27.0
+
+# ---- gRPC ----
+grpcio>=1.41.0
+grpcio-tools>=1.41.0
+protobuf>=3.19.0
+
+# ---- Utilities ----
+numpy>=1.24.0
+scikit-learn>=1.4.0
+huggingface-hub>=0.20.0
+toml
+soundfile

@@ -1,0 +1,23 @@
+# Requirements for speaker_client.py on MacBook
+# Lightweight — NO ML models, just capture + stream
+#
+# Setup:
+#   conda create -n speaker-client python=3.10 -y
+#   conda activate speaker-client
+#   pip install -r requirements-client.txt
+#
+# macOS note: PyAudio needs portaudio
+#   brew install portaudio
+#   pip install pyaudio
+
+# ---- gRPC (communication with server) ----
+grpcio>=1.41.0
+grpcio-tools>=1.41.0
+protobuf>=3.19.0
+
+# ---- Audio capture ----
+pyaudio>=0.2.13
+numpy>=1.24.0
+
+# ---- Video capture + display ----
+opencv-python>=4.8.0

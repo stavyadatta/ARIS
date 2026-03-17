@@ -91,3 +91,36 @@ message Audio {
     int32 num_channels = 3;        // Number of channels (e.g., 1 for mono, 2 for stereo)
     string audio_encoding = 4;     // Encoding format for audio (e.g., "PCM_16", "MP3")
 }
+
+// ============ Speaker Recognition (Phase 1) ============
+
+service SpeakerRecognitionService {
+    // Bidirectional streaming: client sends VAD audio segments,
+    // server returns speaker identification results
+    rpc RecognizeSpeakers(stream SpeakerAudioSegment) returns (stream SpeakerResult);
+}
+
+message SpeakerAudioSegment {
+    bytes audio_data = 1;          // Raw PCM_16 audio bytes
+    int32 sample_rate = 2;         // 16000 Hz
+    int32 num_channels = 3;        // 1 (mono)
+    string audio_encoding = 4;     // "PCM_16"
+    float segment_start_time = 5;  // VAD segment start timestamp (seconds)
+    float segment_duration = 6;    // VAD segment duration (seconds)
+    string session_id = 7;         // Groups segments from the same conversation
+    string face_id = 8;            // Current face_id from camera (links voice to face)
+    bytes image_data = 9;          // Optional: JPEG-encoded camera frame for face recognition
+    int32 image_width = 10;        // Image width (if image_data provided)
+    int32 image_height = 11;       // Image height (if image_data provided)
+}
+
+message SpeakerResult {
+    string speaker_id = 1;         // The face_id of the identified speaker (e.g., "face_1")
+    float confidence = 2;          // Cosine similarity score (0.0 to 1.0)
+    float segment_start_time = 3;  // Corresponding segment start
+    float segment_duration = 4;    // Corresponding segment duration
+    bool is_new_speaker = 5;       // True if voice was just enrolled for this face_id
+    string session_id = 6;         // Echo back session_id
+    bool is_correction = 7;        // True if this corrects a previous result after batch diarization
+    string status = 8;             // Human-readable status for debugging (e.g., "recognized:face_1")
+}
