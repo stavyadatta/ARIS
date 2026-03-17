@@ -77,10 +77,10 @@ class _Speaking(ApiBase):
         
         # response = Llama.send_to_model(total_prompt, stream=True)
         try:
-            response = Grok.send_text(total_prompt, stream=True, grok_model="grok-3")
+            response = ChatGPT.send_text(total_prompt, stream=True)
         except Exception as e:
-            print("grok failed ", e)
-            response = ChatGPT.send_text(total_prompt, stream=True, model='gpt-4-turbo') 
+            print("chatgpt failed ", e)
+            response = Grok.send_text(total_prompt, stream=True, grok_model="grok-3")
         # response = Claude.process_text(messages, system_dict, stream=True)
 
         llm_response = ""

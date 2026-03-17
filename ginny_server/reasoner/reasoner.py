@@ -69,11 +69,11 @@ class _Reasoner:
             total_prompt = system_prompt + user_prompt
 
             try:
-                response = Grok.send_text(total_prompt, stream=False)
+                response = ChatGPT.send_text(total_prompt, stream=False)
                 print("The response is ", response)
             except Exception as e:
-                print("grok failed ", e)
-                response = ChatGPT.send_text(total_prompt, stream=False)
+                print("chatgpt failed ", e)
+                response = Grok.send_text(total_prompt, stream=False)
             response_text = response.choices[0].message.content
 
             if response_text == "bad input":
