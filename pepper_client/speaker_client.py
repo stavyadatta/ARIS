@@ -192,11 +192,92 @@ class SpeakerClient:
         has_image = f"{GREEN}+cam{RESET}" if self._latest_frame_jpeg else f"{DIM}-cam{RESET}"
         logger.info(f"  {DIM}{_ts()}{RESET}  {BLUE}-> QUEUED{RESET}      {duration:.2f}s audio  {has_image}")
 
+    def _video_audio_playback(self, audio_data, sample_rate):
+        """Play extracted audio in background using PyAudio."""
+        try:
+            import pyaudio
+            pa = pyaudio.PyAudio()
+            stream = pa.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=sample_rate,
+                output=True,
+                frames_per_buffer=4096
+            )
+            offset = 0
+            chunk_size = 4096
+            while offset < len(audio_data) and self.is_active:
+                chunk = audio_data[offset:offset + chunk_size]
+                if chunk:
+                    stream.write(chunk)
+                offset += chunk_size
+            stream.stop_stream()
+            stream.close()
+            pa.terminate()
+        except Exception as e:
+            logger.warning(f"  {DIM}{_ts()}{RESET}  {YELLOW}!! AUDIO{RESET}       Playback failed: {e} (video will play without sound)")
+
+    def _video_vad_sender(self, all_audio, sample_rate):
+        """Run VAD on extracted audio and send segments to server (background thread)."""
+        ENERGY_THRESHOLD = 500
+        CHUNK_SAMPLES = 1024
+        CHUNK_BYTES = CHUNK_SAMPLES * 2
+        max_silence_frames = 8
+
+        segment_buffer = io.BytesIO()
+        is_in_speech = False
+        silence_frames = 0
+        speech_start_time = 0.0
+        offset = 0
+
+        while offset < len(all_audio) and self.is_active:
+            chunk = all_audio[offset:offset + CHUNK_BYTES]
+            offset += CHUNK_BYTES
+
+            if len(chunk) < CHUNK_BYTES:
+                break
+
+            audio_np = np.frombuffer(chunk, dtype=np.int16)
+            rms = np.sqrt(np.mean(audio_np.astype(np.float32) ** 2))
+            current_time = (offset // 2) / sample_rate
+
+            if rms > ENERGY_THRESHOLD:
+                silence_frames = 0
+                if not is_in_speech:
+                    is_in_speech = True
+                    segment_buffer = io.BytesIO()
+                    speech_start_time = current_time
+                    logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}<< SPEECH{RESET}      at {current_time:.1f}s  {DIM}RMS={rms:.0f}{RESET}")
+                segment_buffer.write(chunk)
+            else:
+                if is_in_speech:
+                    segment_buffer.write(chunk)
+                    silence_frames += 1
+                    if silence_frames >= max_silence_frames:
+                        is_in_speech = False
+                        silence_frames = 0
+                        segment_buffer.seek(0)
+                        audio_bytes = segment_buffer.read()
+                        duration = (len(audio_bytes) // 2) / sample_rate
+                        if duration >= 0.5:
+                            logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> SENDING{RESET}     {duration:.2f}s audio at {speech_start_time:.1f}s")
+                            self._send_segment(audio_bytes, speech_start_time, duration)
+
+        # Flush remaining
+        if is_in_speech:
+            segment_buffer.seek(0)
+            audio_bytes = segment_buffer.read()
+            duration = (len(audio_bytes) // 2) / sample_rate
+            if duration >= 0.5:
+                logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> SENDING{RESET}     {duration:.2f}s audio (final)")
+                self._send_segment(audio_bytes, speech_start_time, duration)
+
     def run_video_mode(self, video_path):
         """
-        Process a video file — extract audio + frames, send to server.
-        Audio is extracted from the video, split into segments by VAD,
-        and each segment is sent with the corresponding video frame.
+        Play a video file with audio while running face + voice recognition.
+        Video plays in an OpenCV window (main thread, macOS compatible).
+        Audio plays through speakers via PyAudio (background thread).
+        VAD + gRPC streaming runs in background threads.
         """
         import cv2
         import subprocess
@@ -207,7 +288,7 @@ class SpeakerClient:
             logger.error(f"  {DIM}{_ts()}{RESET}  {RED}!! ERROR{RESET}         Video not found: {video_path}")
             return
 
-        # Step 1: Extract audio from video using ffmpeg → 16kHz mono PCM_16 WAV
+        # Step 1: Extract audio from video → 16kHz mono PCM_16 WAV
         temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         temp_wav.close()
         logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}.. EXTRACT{RESET}     extracting audio from video...")
@@ -225,117 +306,90 @@ class SpeakerClient:
             logger.error(f"  {DIM}{_ts()}{RESET}  {RED}!! ERROR{RESET}         ffmpeg failed: {e.stderr.decode()}")
             return
 
-        # Read the extracted audio
         with wave.open(temp_wav.name, 'rb') as wf:
-            sample_rate = wf.getframerate()
+            extracted_sample_rate = wf.getframerate()
             all_audio = wf.readframes(wf.getnframes())
         os.remove(temp_wav.name)
 
-        total_audio_duration = (len(all_audio) // 2) / sample_rate
+        total_audio_duration = (len(all_audio) // 2) / extracted_sample_rate
 
-        # Open video for frame extraction
+        # Step 2: Open video
         cap = cv2.VideoCapture(video_path)
         video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         video_duration = total_frames / video_fps
+        frame_delay = 1.0 / video_fps
 
         print(f"""
 {CYAN}{BOLD}{'=' * 55}
-   VIDEO MODE
+   VIDEO MODE — Playing + Recognizing
 {'=' * 55}{RESET}
 
 {BOLD}  Source:{RESET}
-    Video     {video_path}
+    Video     {os.path.basename(video_path)}
     Duration  {video_duration:.1f}s  {DIM}({total_frames} frames @ {video_fps:.0f}fps){RESET}
-    Audio     {total_audio_duration:.1f}s  {DIM}(16kHz mono PCM_16){RESET}
+    Audio     {total_audio_duration:.1f}s  {DIM}(16kHz mono){RESET}
 
 {BOLD}  Connection:{RESET}
     Server    {self.server_address}
     Session   {self.session_id}
 
-{DIM}  Processing video... Press Ctrl+C to stop.{RESET}
+{DIM}  Playing video with audio. Press 'q' to stop.{RESET}
 {CYAN}{'=' * 55}{RESET}
 """)
 
         self.is_active = True
 
-        # Start response handler
+        # Background threads: gRPC responses, audio playback, VAD + sending
         Thread(target=self._handle_responses, daemon=True).start()
+        Thread(target=self._video_audio_playback, args=(all_audio, extracted_sample_rate), daemon=True).start()
+        Thread(target=self._video_vad_sender, args=(all_audio, extracted_sample_rate), daemon=True).start()
 
-        # VAD on the extracted audio — same logic as mic, but from buffer
-        ENERGY_THRESHOLD = 500
-        CHUNK_SAMPLES = 1024
-        CHUNK_BYTES = CHUNK_SAMPLES * 2  # PCM_16
-        max_silence_frames = 8
-
-        segment_buffer = io.BytesIO()
-        is_in_speech = False
-        silence_frames = 0
-        speech_start_time = 0.0
-        offset = 0
+        # Main thread: play video frames in sync with real-time clock (macOS needs imshow on main)
+        playback_start = time.time()
+        frame_num = 0
 
         try:
-            while offset < len(all_audio) and self.is_active:
-                chunk = all_audio[offset:offset + CHUNK_BYTES]
-                offset += CHUNK_BYTES
-
-                if len(chunk) < CHUNK_BYTES:
+            while cap.isOpened() and self.is_active:
+                ret, frame = cap.read()
+                if not ret:
                     break
 
-                audio_np = np.frombuffer(chunk, dtype=np.int16)
-                rms = np.sqrt(np.mean(audio_np.astype(np.float32) ** 2))
-                current_time = (offset // 2) / sample_rate
+                frame_num += 1
+                video_time = frame_num / video_fps
 
-                # Grab the video frame at this audio timestamp
-                frame_idx = int(current_time * video_fps)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                if ret:
-                    h, w = frame.shape[:2]
-                    _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                    self._latest_frame_jpeg = jpeg.tobytes()
-                    self._latest_frame_w = w
-                    self._latest_frame_h = h
+                # Update latest frame for gRPC sending
+                h, w = frame.shape[:2]
+                _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                self._latest_frame_jpeg = jpeg.tobytes()
+                self._latest_frame_w = w
+                self._latest_frame_h = h
 
-                if rms > ENERGY_THRESHOLD:
-                    silence_frames = 0
-                    if not is_in_speech:
-                        is_in_speech = True
-                        segment_buffer = io.BytesIO()
-                        speech_start_time = current_time
-                        logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}<< SPEECH{RESET}      at {current_time:.1f}s  {DIM}RMS={rms:.0f}{RESET}")
-                    segment_buffer.write(chunk)
-                else:
-                    if is_in_speech:
-                        segment_buffer.write(chunk)
-                        silence_frames += 1
-                        if silence_frames >= max_silence_frames:
-                            is_in_speech = False
-                            silence_frames = 0
-                            segment_buffer.seek(0)
-                            audio_bytes = segment_buffer.read()
-                            duration = (len(audio_bytes) // 2) / sample_rate
-                            if duration >= 0.5:
-                                logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> SENDING{RESET}     {duration:.2f}s audio at {speech_start_time:.1f}s")
-                                self._send_segment(audio_bytes, speech_start_time, duration)
+                # Draw timestamp overlay on the displayed frame
+                timestamp_text = f"{video_time:.1f}s / {video_duration:.1f}s"
+                cv2.putText(frame, timestamp_text, (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-            # Flush any remaining speech
-            if is_in_speech:
-                segment_buffer.seek(0)
-                audio_bytes = segment_buffer.read()
-                duration = (len(audio_bytes) // 2) / sample_rate
-                if duration >= 0.5:
-                    logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> SENDING{RESET}     {duration:.2f}s audio (final)")
-                    self._send_segment(audio_bytes, speech_start_time, duration)
+                cv2.imshow("Video - Speaker Recognition", frame)
 
-            # Wait for server responses to come back
-            logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}.. WAITING{RESET}      waiting for server responses...")
-            time.sleep(3)
+                # Sync to real-time: wait until it's time to show the next frame
+                elapsed = time.time() - playback_start
+                wait_time = video_time - elapsed
+                # cv2.waitKey needs at least 1ms
+                wait_ms = max(1, int(wait_time * 1000))
+                if cv2.waitKey(wait_ms) & 0xFF == ord('q'):
+                    logger.info(f"\n  {YELLOW}Video stopped (q pressed){RESET}")
+                    break
 
         except KeyboardInterrupt:
             logger.info(f"\n  {YELLOW}Stopped.{RESET}")
 
+        # Wait briefly for remaining server responses
+        logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}.. WAITING{RESET}      waiting for final server responses...")
+        time.sleep(3)
+
         cap.release()
+        cv2.destroyAllWindows()
         self.is_active = False
         print(f"\n  {GREEN}Video processing finished.{RESET}\n")
 
