@@ -34,7 +34,7 @@ class _DiariZenCUDA1(DiariZenPipeline):
         embedding_model,
         config_parse: Optional[Dict] = None,
         rttm_out_dir: Optional[str] = None,
-        device: torch.device = torch.device("cuda:1"),
+        device: torch.device = torch.device("cuda:2"),
     ):
         import toml
         from pyannote.audio.pipelines import SpeakerDiarization as SpeakerDiarizationPipeline
@@ -109,7 +109,7 @@ class _DiariZenCUDA1(DiariZenPipeline):
         repo_id: str,
         cache_dir: str = None,
         rttm_out_dir: str = None,
-        device: torch.device = torch.device("cuda:1"),
+        device: torch.device = torch.device("cuda:2"),
     ) -> "_DiariZenCUDA1":
         diarizen_hub = snapshot_download(
             repo_id=repo_id,
@@ -143,12 +143,12 @@ class _Diarization:
     Thread-safe via Lock.
     """
 
-    MIN_DIARIZATION_DURATION = 10.0
+    MIN_DIARIZATION_DURATION = 20.0
 
     def __init__(self,
-                 model_name: str = "BUT-FIT/diarizen-wavlm-large-s80-md",
-                 device: str = "cuda:1",
-                 max_speakers: int = 3):
+                 model_name: str = "BUT-FIT/diarizen-wavlm-large-s80-md-v2",
+                 device: str = "cuda:2",
+                 max_speakers: int = 4):
         self.device = torch.device(device)
         self.max_speakers = max_speakers
         self._lock = threading.Lock()

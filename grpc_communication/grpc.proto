@@ -112,6 +112,7 @@ message SpeakerAudioSegment {
     bytes image_data = 9;          // Optional: JPEG-encoded camera frame for face recognition
     int32 image_width = 10;        // Image width (if image_data provided)
     int32 image_height = 11;       // Image height (if image_data provided)
+    float video_timestamp = 12;    // Video mode: timestamp in the source video (seconds)
 }
 
 message SpeakerResult {
@@ -123,4 +124,5 @@ message SpeakerResult {
     string session_id = 6;         // Echo back session_id
     bool is_correction = 7;        // True if this corrects a previous result after batch diarization
     string status = 8;             // Human-readable status for debugging (e.g., "recognized:face_1")
+    float video_timestamp = 9;     // Video mode: echoed timestamp from source video
 }

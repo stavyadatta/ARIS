@@ -73,6 +73,8 @@ class SpeakerClient:
         self._latest_frame_jpeg = None
         self._latest_frame_w = 0
         self._latest_frame_h = 0
+        self._video_mode = False
+        self._last_speaker = None  # track transitions for video mode
 
         logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> CLIENT{RESET}     server={server_address}  session={self.session_id}")
 
@@ -85,6 +87,11 @@ class SpeakerClient:
             except queue.Empty:
                 continue
 
+    def _format_video_time(self, seconds):
+        """Format seconds as MM:SS for video timestamps."""
+        m, s = divmod(int(seconds), 60)
+        return f"{m:02d}:{s:02d}"
+
     def _handle_responses(self):
         """Process and display server results."""
         try:
@@ -93,22 +100,66 @@ class SpeakerClient:
                 speaker = result.speaker_id or "unknown"
                 conf = result.confidence
 
-                if result.is_correction:
-                    icon, label, color = "~~", "CORRECTION", YELLOW
-                elif result.is_new_speaker:
-                    icon, label, color = "**", "NEW VOICE", MAGENTA
-                elif conf >= 0.6:
-                    icon, label, color = "++", "RECOGNIZED", GREEN
-                else:
-                    icon, label, color = "??", "UNKNOWN", RED
+                if self._video_mode:
+                    # VIDEO MODE: only show transitions and new enrollments
+                    vt = self._format_video_time(result.video_timestamp)
 
-                logger.info(
-                    f"  {DIM}{_ts()}{RESET}  {color}{icon} {label:<14}{RESET} "
-                    f"{BOLD}{speaker:<12}{RESET}  "
-                    f"conf={conf:.4f}  t={result.segment_start_time:.1f}s  "
-                    f"dur={result.segment_duration:.1f}s  "
-                    f"{DIM}{result.status}{RESET}"
-                )
+                    if result.is_new_speaker:
+                        logger.info(
+                            f"  {MAGENTA}{BOLD}  [{vt}]  NEW PERSON    "
+                            f"{speaker}{RESET}  "
+                            f"{DIM}(enrolled voice){RESET}"
+                        )
+                        self._last_speaker = speaker
+
+                    elif speaker != self._last_speaker and speaker != "unknown":
+                        # Speaker changed — this is a transition
+                        if self._last_speaker:
+                            logger.info(
+                                f"  {CYAN}{BOLD}  [{vt}]  SWITCH        "
+                                f"{self._last_speaker} -> {speaker}{RESET}  "
+                                f"{DIM}conf={conf:.2f}{RESET}"
+                            )
+                        else:
+                            logger.info(
+                                f"  {GREEN}{BOLD}  [{vt}]  SPEAKING      "
+                                f"{speaker}{RESET}  "
+                                f"{DIM}conf={conf:.2f}{RESET}"
+                            )
+                        self._last_speaker = speaker
+
+                    elif speaker == "unknown":
+                        logger.info(
+                            f"  {YELLOW}  [{vt}]  UNKNOWN       "
+                            f"???{RESET}  "
+                            f"{DIM}conf={conf:.2f}  {result.status}{RESET}"
+                        )
+
+                    elif result.is_correction:
+                        logger.info(
+                            f"  {DIM}  [{vt}]  correction    "
+                            f"{speaker}  conf={conf:.2f}{RESET}"
+                        )
+                    # else: same speaker, no transition — stay quiet
+
+                else:
+                    # LIVE MODE: show everything
+                    if result.is_correction:
+                        icon, label, color = "~~", "CORRECTION", YELLOW
+                    elif result.is_new_speaker:
+                        icon, label, color = "**", "NEW VOICE", MAGENTA
+                    elif conf >= 0.6:
+                        icon, label, color = "++", "RECOGNIZED", GREEN
+                    else:
+                        icon, label, color = "??", "UNKNOWN", RED
+
+                    logger.info(
+                        f"  {DIM}{_ts()}{RESET}  {color}{icon} {label:<14}{RESET} "
+                        f"{BOLD}{speaker:<12}{RESET}  "
+                        f"conf={conf:.4f}  t={result.segment_start_time:.1f}s  "
+                        f"dur={result.segment_duration:.1f}s  "
+                        f"{DIM}{result.status}{RESET}"
+                    )
         except grpc.RpcError as e:
             logger.error(f"  {DIM}{_ts()}{RESET}  {RED}!! gRPC ERROR{RESET}    {e.code()} - {e.details()}")
         except Exception as e:
@@ -173,7 +224,7 @@ class SpeakerClient:
             stream.close()
             pa.terminate()
 
-    def _send_segment(self, audio_bytes, start_time, duration):
+    def _send_segment(self, audio_bytes, start_time, duration, video_timestamp=0.0):
         """Queue an audio segment + latest camera frame for sending."""
         segment = grpc_pb2.SpeakerAudioSegment(
             audio_data=audio_bytes,
@@ -186,11 +237,13 @@ class SpeakerClient:
             face_id="",  # server determines face_id from image
             image_data=self._latest_frame_jpeg or b"",
             image_width=self._latest_frame_w,
-            image_height=self._latest_frame_h
+            image_height=self._latest_frame_h,
+            video_timestamp=video_timestamp
         )
         self._segments_to_send.put(segment)
         has_image = f"{GREEN}+cam{RESET}" if self._latest_frame_jpeg else f"{DIM}-cam{RESET}"
-        logger.info(f"  {DIM}{_ts()}{RESET}  {BLUE}-> QUEUED{RESET}      {duration:.2f}s audio  {has_image}")
+        if not self._video_mode:
+            logger.info(f"  {DIM}{_ts()}{RESET}  {BLUE}-> QUEUED{RESET}      {duration:.2f}s audio  {has_image}")
 
     def _video_audio_playback(self, audio_data, sample_rate):
         """Play extracted audio in background using PyAudio."""
@@ -260,8 +313,9 @@ class SpeakerClient:
                         audio_bytes = segment_buffer.read()
                         duration = (len(audio_bytes) // 2) / sample_rate
                         if duration >= 0.5:
-                            logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> SENDING{RESET}     {duration:.2f}s audio at {speech_start_time:.1f}s")
-                            self._send_segment(audio_bytes, speech_start_time, duration)
+                            vt = self._format_video_time(speech_start_time)
+                            logger.info(f"  {DIM}  [{vt}]  analyzing     {duration:.2f}s audio...{RESET}")
+                            self._send_segment(audio_bytes, speech_start_time, duration, video_timestamp=speech_start_time)
 
         # Flush remaining
         if is_in_speech:
@@ -269,8 +323,9 @@ class SpeakerClient:
             audio_bytes = segment_buffer.read()
             duration = (len(audio_bytes) // 2) / sample_rate
             if duration >= 0.5:
-                logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> SENDING{RESET}     {duration:.2f}s audio (final)")
-                self._send_segment(audio_bytes, speech_start_time, duration)
+                vt = self._format_video_time(speech_start_time)
+                logger.info(f"  {DIM}  [{vt}]  analyzing     {duration:.2f}s audio (final)...{RESET}")
+                self._send_segment(audio_bytes, speech_start_time, duration, video_timestamp=speech_start_time)
 
     def run_video_mode(self, video_path):
         """
@@ -339,6 +394,7 @@ class SpeakerClient:
 """)
 
         self.is_active = True
+        self._video_mode = True
 
         # Background threads: gRPC responses, audio playback, VAD + sending
         Thread(target=self._handle_responses, daemon=True).start()

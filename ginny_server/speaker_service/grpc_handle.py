@@ -102,6 +102,7 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                 session_id = request.session_id
                 segment_start = request.segment_start_time
                 segment_duration = request.segment_duration
+                video_ts = request.video_timestamp
 
                 # === FACE RECOGNITION (if image provided) ===
                 if request.image_data:
@@ -133,7 +134,8 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                             is_new_speaker=result["is_new"],
                             session_id=session_id,
                             is_correction=False,
-                            status=result["status"]
+                            status=result["status"],
+                            video_timestamp=video_ts
                         )
                 except Exception as e:
                     _log("!!", "VOICE ERROR", str(e), _RED)
@@ -171,7 +173,8 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                                     is_new_speaker=result["is_new"],
                                     session_id=session_id,
                                     is_correction=True,
-                                    status=result["status"]
+                                    status=result["status"],
+                                    video_timestamp=video_ts
                                 )
                             except Exception as e:
                                 _log("!!", "DIAR ERROR", str(e), _RED)

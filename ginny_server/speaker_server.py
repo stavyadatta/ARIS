@@ -52,8 +52,8 @@ def serve(port=50051, max_workers=10):
 
 {BOLD}  Pipeline:{RESET}
     Face    InsightFace buffalo_l     {DIM}cuda:0{RESET}
-    Voice   ERes2NetV2 192-dim        {DIM}cuda:1{RESET}
-    Diar    DiariZen wavlm-large      {DIM}cuda:1{RESET}
+    Voice   ERes2NetV2 (voxceleb)     {DIM}cuda:1{RESET}
+    Diar    DiariZen v2 (4-spk)       {DIM}cuda:2{RESET}
 
 {BOLD}  Storage:{RESET}
     Faces   /workspace/database/face_db/

@@ -60,7 +60,7 @@ class _SpeakerRecognition:
     """
 
     def __init__(self,
-                 model_id: str = "iic/speech_eres2netv2_sv_zh-cn_16k-common",
+                 model_id: str = "iic/speech_eres2netv2_sv_en_voxceleb_16k",
                  db_dir: str = "/workspace/database/voice_db",
                  recognition_threshold: float = 0.6,
                  device: str = "cuda:1"):
