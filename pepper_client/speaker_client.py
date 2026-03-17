@@ -97,45 +97,64 @@ class SpeakerClient:
         except Exception as e:
             logger.error(f"Response handler error: {e}")
 
-    def _camera_loop(self):
-        """Continuously capture webcam frames (runs in background thread)."""
+    def _audio_loop(self, energy_threshold=500):
+        """Capture audio from mic (runs in BACKGROUND thread)."""
         try:
-            import cv2
+            import pyaudio
         except ImportError:
-            logger.warning("OpenCV not available — running without camera")
+            logger.error("PyAudio not installed. Run: pip install pyaudio")
             return
 
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            logger.warning("Could not open webcam — running without camera")
-            return
+        pa = pyaudio.PyAudio()
+        stream = pa.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=self.sample_rate,
+            input=True,
+            frames_per_buffer=1024
+        )
 
-        logger.info("Webcam opened — capturing frames")
+        conversation_start = time.time()
+        segment_buffer = io.BytesIO()
+        is_in_speech = False
+        silence_frames = 0
+        speech_start_time = 0.0
+        max_silence_frames = 8
 
-        while self.is_active:
-            ret, frame = cap.read()
-            if not ret:
-                time.sleep(0.01)
-                continue
+        try:
+            while self.is_active:
+                data = stream.read(1024, exception_on_overflow=False)
+                audio_np = np.frombuffer(data, dtype=np.int16)
+                rms = np.sqrt(np.mean(audio_np.astype(np.float32) ** 2))
+                current_time = time.time() - conversation_start
 
-            # Encode as JPEG for efficient transmission
-            h, w = frame.shape[:2]
-            _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            self._latest_frame_jpeg = jpeg.tobytes()
-            self._latest_frame_w = w
-            self._latest_frame_h = h
-
-            # Show preview window
-            cv2.imshow("Speaker Client - Camera", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                logger.info("Camera window closed (q pressed)")
-                self.is_active = False
-                break
-
-            time.sleep(0.033)  # ~30fps
-
-        cap.release()
-        cv2.destroyAllWindows()
+                if rms > energy_threshold:
+                    silence_frames = 0
+                    if not is_in_speech:
+                        is_in_speech = True
+                        segment_buffer = io.BytesIO()
+                        speech_start_time = current_time
+                        logger.info(f"  Speech detected at {current_time:.1f}s (RMS={rms:.0f})")
+                    segment_buffer.write(data)
+                else:
+                    if is_in_speech:
+                        segment_buffer.write(data)
+                        silence_frames += 1
+                        if silence_frames >= max_silence_frames:
+                            is_in_speech = False
+                            silence_frames = 0
+                            segment_buffer.seek(0)
+                            audio_bytes = segment_buffer.read()
+                            duration = (len(audio_bytes) // 2) / self.sample_rate
+                            if duration >= 0.5:
+                                logger.info(f"  Speech ended — {duration:.2f}s")
+                                self._send_segment(audio_bytes, speech_start_time, duration)
+        except Exception as e:
+            logger.error(f"Audio loop error: {e}")
+        finally:
+            stream.stop_stream()
+            stream.close()
+            pa.terminate()
 
     def _send_segment(self, audio_bytes, start_time, duration):
         """Queue an audio segment + latest camera frame for sending."""
@@ -159,33 +178,13 @@ class SpeakerClient:
     def run_test_mode(self, use_camera=True):
         """
         Record from host mic + webcam.
-        Press Ctrl+C to stop (or 'q' in camera window).
+        macOS requires cv2.imshow on the main thread, so:
+        - Camera runs on MAIN thread (with imshow)
+        - Audio + gRPC run on BACKGROUND threads
+        Press Ctrl+C or 'q' in camera window to stop.
         """
-        try:
-            import pyaudio
-        except ImportError:
-            logger.error("PyAudio not installed. Run: pip install pyaudio")
-            return
-
         ENERGY_THRESHOLD = 500
         self.is_active = True
-
-        # Start response handler
-        Thread(target=self._handle_responses, daemon=True).start()
-
-        # Start camera (if requested)
-        if use_camera:
-            Thread(target=self._camera_loop, daemon=True).start()
-
-        # Open microphone
-        pa = pyaudio.PyAudio()
-        stream = pa.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=self.sample_rate,
-            input=True,
-            frames_per_buffer=1024
-        )
 
         logger.info("=" * 65)
         logger.info("STANDALONE CLIENT — MacBook mic + webcam")
@@ -197,49 +196,57 @@ class SpeakerClient:
             logger.info("  Press 'q' in camera window to stop.")
         logger.info("=" * 65)
 
-        conversation_start = time.time()
-        segment_buffer = io.BytesIO()
-        is_in_speech = False
-        silence_frames = 0
-        speech_start_time = 0.0
-        max_silence_frames = 8
+        # Background threads: gRPC responses + audio capture
+        Thread(target=self._handle_responses, daemon=True).start()
+        Thread(target=self._audio_loop, args=(ENERGY_THRESHOLD,), daemon=True).start()
 
-        try:
-            while self.is_active:
-                data = stream.read(1024, exception_on_overflow=False)
-                audio_np = np.frombuffer(data, dtype=np.int16)
-                rms = np.sqrt(np.mean(audio_np.astype(np.float32) ** 2))
-                current_time = time.time() - conversation_start
+        if use_camera:
+            # Camera on MAIN thread (macOS requires this for cv2.imshow)
+            try:
+                import cv2
+            except ImportError:
+                logger.warning("OpenCV not available — running audio only")
+                use_camera = False
 
-                if rms > ENERGY_THRESHOLD:
-                    silence_frames = 0
-                    if not is_in_speech:
-                        is_in_speech = True
-                        segment_buffer = io.BytesIO()
-                        speech_start_time = current_time
-                        logger.info(f"  Speech detected at {current_time:.1f}s (RMS={rms:.0f})")
-                    segment_buffer.write(data)
-                else:
-                    if is_in_speech:
-                        segment_buffer.write(data)
-                        silence_frames += 1
-                        if silence_frames >= max_silence_frames:
-                            is_in_speech = False
-                            silence_frames = 0
-                            segment_buffer.seek(0)
-                            audio_bytes = segment_buffer.read()
-                            duration = (len(audio_bytes) // 2) / self.sample_rate
-                            if duration >= 0.5:
-                                logger.info(f"  Speech ended — {duration:.2f}s")
-                                self._send_segment(audio_bytes, speech_start_time, duration)
+        if use_camera:
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                logger.warning("Could not open webcam — running audio only")
+                use_camera = False
 
-        except KeyboardInterrupt:
-            logger.info("Stopping...")
+        if use_camera:
+            logger.info("Webcam opened — capturing frames")
+            try:
+                while self.is_active:
+                    ret, frame = cap.read()
+                    if not ret:
+                        time.sleep(0.01)
+                        continue
+
+                    h, w = frame.shape[:2]
+                    _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    self._latest_frame_jpeg = jpeg.tobytes()
+                    self._latest_frame_w = w
+                    self._latest_frame_h = h
+
+                    cv2.imshow("Speaker Client - Camera", frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        logger.info("Camera window closed (q pressed)")
+                        break
+            except KeyboardInterrupt:
+                logger.info("Stopping...")
+            finally:
+                cap.release()
+                cv2.destroyAllWindows()
+        else:
+            # No camera — just wait on main thread
+            try:
+                while self.is_active:
+                    time.sleep(0.1)
+            except KeyboardInterrupt:
+                logger.info("Stopping...")
 
         self.is_active = False
-        stream.stop_stream()
-        stream.close()
-        pa.terminate()
         logger.info("Client finished.")
 
 
