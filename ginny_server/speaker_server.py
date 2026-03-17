@@ -29,21 +29,38 @@ import grpc_communication.grpc_pb2_grpc as pb2_grpc
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(name)-20s | %(levelname)-7s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    format="%(message)s",
+    datefmt="%H:%M:%S"
 )
 logger = logging.getLogger("speaker_server")
+
+CYAN = "\033[96m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
 
 
 def serve(port=50051, max_workers=10):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
 
-    logger.info("Initializing Face + Speaker Recognition pipeline...")
-    logger.info("  Face:  InsightFace buffalo_l (cuda:0)")
-    logger.info("  Voice: ERes2NetV2 192-dim (cuda:1)")
-    logger.info("  Diar:  DiariZen wavlm-large (cuda:1)")
-    logger.info("  Face DB:  /workspace/database/face_db/")
-    logger.info("  Voice DB: /workspace/database/voice_db/")
+    print(f"""
+{CYAN}{BOLD}{'=' * 60}
+   SPEAKER + FACE RECOGNITION SERVER
+{'=' * 60}{RESET}
+
+{BOLD}  Pipeline:{RESET}
+    Face    InsightFace buffalo_l     {DIM}cuda:0{RESET}
+    Voice   ERes2NetV2 192-dim        {DIM}cuda:1{RESET}
+    Diar    DiariZen wavlm-large      {DIM}cuda:1{RESET}
+
+{BOLD}  Storage:{RESET}
+    Faces   /workspace/database/face_db/
+    Voices  /workspace/database/voice_db/
+
+{DIM}  Loading models...{RESET}
+""")
 
     pb2_grpc.add_SpeakerRecognitionServiceServicer_to_server(
         SpeakerRecognitionManager(),
@@ -51,14 +68,19 @@ def serve(port=50051, max_workers=10):
     )
 
     server.add_insecure_port(f"[::]:{port}")
-    logger.info(f"Server running on port {port}")
-    logger.info("Service: SpeakerRecognitionService (face + voice)")
+
+    print(f"""
+{GREEN}{BOLD}  Server ready on port {port}{RESET}
+{DIM}  Waiting for client connections...
+  Press Ctrl+C to stop.{RESET}
+{CYAN}{'=' * 60}{RESET}
+""")
 
     try:
         server.start()
         server.wait_for_termination()
     except KeyboardInterrupt:
-        logger.info("Shutting down...")
+        print(f"\n{YELLOW}  Shutting down...{RESET}")
         server.stop(0)
 
 

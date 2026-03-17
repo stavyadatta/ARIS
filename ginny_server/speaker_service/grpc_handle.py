@@ -1,11 +1,26 @@
 import cv2
 import logging
+import datetime
 import numpy as np
 import traceback
 import grpc_communication.grpc_pb2 as pb2
 import grpc_communication.grpc_pb2_grpc as pb2_grpc
 
 logger = logging.getLogger("speaker_recognition")
+
+_CYAN = "\033[96m"
+_GREEN = "\033[92m"
+_YELLOW = "\033[93m"
+_RED = "\033[91m"
+_MAGENTA = "\033[95m"
+_BLUE = "\033[94m"
+_DIM = "\033[2m"
+_BOLD = "\033[1m"
+_RESET = "\033[0m"
+
+def _log(icon, label, detail, color=_RESET):
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    logger.info(f"  {_DIM}{ts}{_RESET}  {color}{icon} {label:<14}{_RESET} {detail}")
 
 
 class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
@@ -28,7 +43,7 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
         self.speaker_recognition = SpeakerRecognition
         self.diarization = Diarization
         self.face_recognition = FaceRecognition
-        logger.info("SpeakerRecognitionManager initialized with face + voice pipeline")
+        _log("OK", "SERVICER", "Face + Voice pipeline ready", _GREEN)
 
     def _extract_face_id(self, image_data, image_width, image_height):
         """
@@ -53,19 +68,18 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
             )
 
             if face_id is not None:
-                logger.info(f"FACE RECOGNIZED: {face_id}")
+                _log("^^", "FACE FOUND", f"{_BOLD}{face_id}{_RESET}", _BLUE)
                 return face_id
             else:
-                # Unknown face — enroll it
                 new_id = self.face_recognition.enroll_face(embedding, img)
-                logger.info(f"FACE ENROLLED: {new_id}")
+                _log("**", "FACE NEW", f"{_BOLD}{new_id}{_RESET}  (enrolled)", _MAGENTA)
                 return new_id
 
         except ValueError as e:
-            logger.debug(f"No face detected: {e}")
+            _log("--", "NO FACE", str(e), _DIM)
             return None
         except Exception as e:
-            logger.error(f"Face recognition error: {e}")
+            _log("!!", "FACE ERROR", str(e), _RED)
             return None
 
     def RecognizeSpeakers(self, request_iterator, context):
@@ -122,7 +136,7 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                             status=result["status"]
                         )
                 except Exception as e:
-                    logger.error(f"Short path error: {e}")
+                    _log("!!", "VOICE ERROR", str(e), _RED)
                     traceback.print_exc()
 
                 # === LONG PATH: Buffer accumulation + batch diarization ===
@@ -160,15 +174,15 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                                     status=result["status"]
                                 )
                             except Exception as e:
-                                logger.error(f"Diarization segment error: {e}")
+                                _log("!!", "DIAR ERROR", str(e), _RED)
                                 traceback.print_exc()
 
                 except Exception as e:
-                    logger.error(f"Long path error: {e}")
+                    _log("!!", "BUFFER ERROR", str(e), _RED)
                     traceback.print_exc()
 
         except Exception as e:
-            logger.error(f"Fatal error in RecognizeSpeakers: {e}")
+            _log("!!", "FATAL ERROR", str(e), _RED)
             traceback.print_exc()
         finally:
             if session_id is not None:

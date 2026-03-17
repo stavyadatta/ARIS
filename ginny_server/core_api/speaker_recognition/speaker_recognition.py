@@ -12,6 +12,16 @@ from typing import Tuple, Optional, List
 from modelscope.models import Model
 from sklearn.metrics.pairwise import cosine_similarity
 
+# ANSI colors
+_CYAN = "\033[96m"
+_GREEN = "\033[92m"
+_YELLOW = "\033[93m"
+_RED = "\033[91m"
+_MAGENTA = "\033[95m"
+_DIM = "\033[2m"
+_BOLD = "\033[1m"
+_RESET = "\033[0m"
+
 # Set up logger for speaker recognition
 logger = logging.getLogger("speaker_recognition")
 logger.setLevel(logging.INFO)
@@ -25,12 +35,17 @@ _file_handler.setFormatter(logging.Formatter(
 ))
 logger.addHandler(_file_handler)
 
-# Also log to stdout
+# Stdout handler — clean colored output
 _stream_handler = logging.StreamHandler()
-_stream_handler.setFormatter(logging.Formatter(
-    "[SpeakerRecog] %(levelname)-7s | %(message)s"
-))
+_stream_handler.setFormatter(logging.Formatter("%(message)s"))
 logger.addHandler(_stream_handler)
+
+
+def _log_event(icon, label, detail, color=_RESET):
+    """Pretty print a log event."""
+    import datetime
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    logger.info(f"  {_DIM}{ts}{_RESET}  {color}{icon} {label:<14}{_RESET} {detail}")
 
 
 class _SpeakerRecognition:
@@ -58,16 +73,14 @@ class _SpeakerRecognition:
         self._ensure_db_directory()
 
         # Load ERes2NetV2 model directly for embedding extraction
-        logger.info(f"Loading ERes2NetV2 model on {device}...")
+        _log_event("...", "MODEL LOAD", f"ERes2NetV2 on {device}", _DIM)
         self.model = Model.from_pretrained(model_id, device=device)
         self.model.eval()
-        logger.info(f"ERes2NetV2 model loaded on {device}")
+        _log_event("OK", "MODEL READY", f"ERes2NetV2 on {device}", _GREEN)
 
-        # Load existing voice embeddings from disk (mirrors face_recognition._load_database)
+        # Load existing voice embeddings from disk
         self.known_ids, self.known_embeddings = self._load_database()
-        logger.info(
-            f"Voice DB loaded: {len(self.known_ids)} voices from {self.db_dir}"
-        )
+        _log_event("DB", "VOICE DB", f"{len(self.known_ids)} voices loaded from {self.db_dir}", _CYAN)
 
     def _ensure_db_directory(self):
         """Ensure that the voice database directory exists."""
@@ -126,10 +139,14 @@ class _SpeakerRecognition:
             np.ndarray of shape (192,)
         """
         with self._lock:
-            temp_wav = self._audio_bytes_to_temp_wav(audio_data, sample_rate)
+            # Convert PCM_16 bytes → float32 tensor (model expects tensor, not file path)
+            audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
+            audio_np = audio_np / 32768.0  # normalize to [-1, 1]
+            audio_tensor = torch.from_numpy(audio_np).to(self.device)
+
             try:
                 with torch.no_grad():
-                    embedding = self.model(temp_wav)
+                    embedding = self.model(audio_tensor)
 
                 if isinstance(embedding, dict):
                     embedding = embedding.get("spk_embedding", embedding.get("output", embedding))
@@ -145,9 +162,8 @@ class _SpeakerRecognition:
                     )
 
                 return embedding
-            finally:
-                if os.path.exists(temp_wav):
-                    os.remove(temp_wav)
+            except Exception:
+                raise
 
     def _match_voice(self, embedding: np.ndarray) -> Tuple[Optional[str], float]:
         """
@@ -158,7 +174,7 @@ class _SpeakerRecognition:
             (face_id, score) if match >= threshold, else (None, best_score)
         """
         if self.known_embeddings.size == 0:
-            logger.debug("Voice DB is empty, no match possible")
+            _log_event("--", "VOICE MATCH", "DB empty, no match possible", _DIM)
             return None, 0.0
 
         embedding_2d = embedding.reshape(1, -1)
@@ -168,16 +184,11 @@ class _SpeakerRecognition:
 
         if best_score >= self.recognition_threshold:
             matched_id = self.known_ids[best_match_idx]
-            logger.info(
-                f"VOICE MATCH: {matched_id} (score={best_score:.4f}, "
-                f"threshold={self.recognition_threshold})"
-            )
+            _log_event("~~", "VOICE MATCH", f"{_BOLD}{matched_id}{_RESET}  score={best_score:.4f}", _GREEN)
             return matched_id, best_score
         else:
-            logger.info(
-                f"NO VOICE MATCH: best={self.known_ids[best_match_idx] if self.known_ids else 'N/A'} "
-                f"(score={best_score:.4f}, threshold={self.recognition_threshold})"
-            )
+            best_name = self.known_ids[best_match_idx] if self.known_ids else "N/A"
+            _log_event("xx", "NO MATCH", f"best={best_name}  score={best_score:.4f}  threshold={self.recognition_threshold}", _YELLOW)
             return None, best_score
 
     def _save_voice(self, face_id: str, embedding: np.ndarray,
@@ -210,12 +221,12 @@ class _SpeakerRecognition:
                     wf.setsampwidth(2)
                     wf.setframerate(sample_rate)
                     wf.writeframes(audio_data)
-                logger.info(f"VOICE SAVED: {face_id} -> {npy_path} + {wav_path}")
+                _log_event(">>", "VOICE SAVED", f"{_BOLD}{face_id}{_RESET}  .npy + .wav", _MAGENTA)
             except Exception as e:
                 logger.warning(f"Failed to save WAV for {face_id}: {e}")
-                logger.info(f"VOICE SAVED: {face_id} -> {npy_path} (no WAV)")
+                _log_event(">>", "VOICE SAVED", f"{_BOLD}{face_id}{_RESET}  .npy only", _MAGENTA)
         else:
-            logger.info(f"VOICE SAVED: {face_id} -> {npy_path} (no WAV)")
+            _log_event(">>", "VOICE SAVED", f"{_BOLD}{face_id}{_RESET}  .npy only", _MAGENTA)
 
     def has_voice(self, face_id: str) -> bool:
         """Check if a voice embedding exists for this face_id."""
@@ -245,17 +256,14 @@ class _SpeakerRecognition:
         min_bytes = int(0.5 * sample_rate * 2)
         if len(audio_data) < min_bytes:
             duration = len(audio_data) / (sample_rate * 2)
-            logger.warning(f"Audio too short: {duration:.2f}s (min 0.5s)")
+            _log_event("!!", "TOO SHORT", f"{duration:.2f}s (min 0.5s)", _YELLOW)
             raise ValueError(
                 f"Audio segment too short ({len(audio_data)} bytes, "
                 f"minimum {min_bytes} bytes / 0.5s required)"
             )
 
         audio_duration = len(audio_data) / (sample_rate * 2)
-        logger.info(
-            f"IDENTIFY: audio={audio_duration:.2f}s, "
-            f"current_face_id={current_face_id}"
-        )
+        _log_event("<<", "IDENTIFY", f"audio={audio_duration:.2f}s  face={current_face_id or 'none'}", _CYAN)
 
         # Step 1: Extract embedding
         embedding = self.extract_embedding(audio_data, sample_rate)
@@ -264,11 +272,7 @@ class _SpeakerRecognition:
         matched_id, confidence = self._match_voice(embedding)
 
         if matched_id is not None:
-            # Voice recognized — return the face_id
-            logger.info(
-                f"RESULT: RECOGNIZED as {matched_id} "
-                f"(confidence={confidence:.4f})"
-            )
+            _log_event("++", "RECOGNIZED", f"{_BOLD}{matched_id}{_RESET}  confidence={confidence:.4f}", _GREEN)
             return {
                 "face_id": matched_id,
                 "confidence": confidence,
@@ -280,12 +284,8 @@ class _SpeakerRecognition:
         # Step 3: No voice match — try to enroll using face_id
         if current_face_id is not None:
             if not self.has_voice(current_face_id):
-                # Face is known but has no voice yet — enroll voice under this face_id
                 self._save_voice(current_face_id, embedding, audio_data, sample_rate)
-                logger.info(
-                    f"RESULT: ENROLLED voice for {current_face_id} "
-                    f"(face known, voice new)"
-                )
+                _log_event("**", "ENROLLED", f"{_BOLD}{current_face_id}{_RESET}  (face known, voice new)", _MAGENTA)
                 return {
                     "face_id": current_face_id,
                     "confidence": 0.0,
@@ -294,12 +294,7 @@ class _SpeakerRecognition:
                     "embedding": embedding
                 }
             else:
-                # Face has a voice but it didn't match — someone else is speaking
-                logger.info(
-                    f"RESULT: UNKNOWN SPEAKER — {current_face_id} has a voice "
-                    f"on file but this voice doesn't match (best_score={confidence:.4f}). "
-                    f"Likely a different person speaking off-camera."
-                )
+                _log_event("??", "UNKNOWN", f"voice mismatch for {current_face_id}  score={confidence:.4f}  (someone else speaking?)", _YELLOW)
                 return {
                     "face_id": None,
                     "confidence": confidence,
@@ -308,10 +303,7 @@ class _SpeakerRecognition:
                     "embedding": embedding
                 }
 
-        # Step 4: No face_id provided, no voice match — truly unknown
-        logger.info(
-            f"RESULT: UNKNOWN SPEAKER — no voice match, no face_id provided"
-        )
+        _log_event("??", "UNKNOWN", "no voice match, no face_id provided", _RED)
         return {
             "face_id": None,
             "confidence": confidence,

@@ -31,10 +31,23 @@ import grpc_pb2_grpc
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(name)-20s | %(levelname)-7s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    format="%(message)s",
 )
 logger = logging.getLogger("speaker_client")
+
+CYAN = "\033[96m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+MAGENTA = "\033[95m"
+BLUE = "\033[94m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+def _ts():
+    import datetime
+    return datetime.datetime.now().strftime("%H:%M:%S")
 
 
 class SpeakerClient:
@@ -61,7 +74,7 @@ class SpeakerClient:
         self._latest_frame_w = 0
         self._latest_frame_h = 0
 
-        logger.info(f"Client initialized — server: {server_address}, session: {self.session_id}")
+        logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> CLIENT{RESET}     server={server_address}  session={self.session_id}")
 
     def _generate_segments(self):
         """Generator yielding SpeakerAudioSegment for gRPC stream."""
@@ -77,25 +90,29 @@ class SpeakerClient:
         try:
             responses = self.stub.RecognizeSpeakers(self._generate_segments())
             for result in responses:
-                if result.is_correction:
-                    tag = "CORRECTION"
-                elif result.is_new_speaker:
-                    tag = "NEW"
-                else:
-                    tag = "RECOGNIZED"
-
                 speaker = result.speaker_id or "unknown"
+                conf = result.confidence
+
+                if result.is_correction:
+                    icon, label, color = "~~", "CORRECTION", YELLOW
+                elif result.is_new_speaker:
+                    icon, label, color = "**", "NEW VOICE", MAGENTA
+                elif conf >= 0.6:
+                    icon, label, color = "++", "RECOGNIZED", GREEN
+                else:
+                    icon, label, color = "??", "UNKNOWN", RED
+
                 logger.info(
-                    f"[{tag:>10}] face_id={speaker:<12} "
-                    f"confidence={result.confidence:.4f}  "
-                    f"t={result.segment_start_time:.1f}s  "
+                    f"  {DIM}{_ts()}{RESET}  {color}{icon} {label:<14}{RESET} "
+                    f"{BOLD}{speaker:<12}{RESET}  "
+                    f"conf={conf:.4f}  t={result.segment_start_time:.1f}s  "
                     f"dur={result.segment_duration:.1f}s  "
-                    f"status={result.status}"
+                    f"{DIM}{result.status}{RESET}"
                 )
         except grpc.RpcError as e:
-            logger.error(f"gRPC error: {e.code()} - {e.details()}")
+            logger.error(f"  {DIM}{_ts()}{RESET}  {RED}!! gRPC ERROR{RESET}    {e.code()} - {e.details()}")
         except Exception as e:
-            logger.error(f"Response handler error: {e}")
+            logger.error(f"  {DIM}{_ts()}{RESET}  {RED}!! ERROR{RESET}         {e}")
 
     def _audio_loop(self, energy_threshold=500):
         """Capture audio from mic (runs in BACKGROUND thread)."""
@@ -134,7 +151,7 @@ class SpeakerClient:
                         is_in_speech = True
                         segment_buffer = io.BytesIO()
                         speech_start_time = current_time
-                        logger.info(f"  Speech detected at {current_time:.1f}s (RMS={rms:.0f})")
+                        logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}<< SPEECH{RESET}      started at {current_time:.1f}s  {DIM}RMS={rms:.0f}{RESET}")
                     segment_buffer.write(data)
                 else:
                     if is_in_speech:
@@ -147,7 +164,7 @@ class SpeakerClient:
                             audio_bytes = segment_buffer.read()
                             duration = (len(audio_bytes) // 2) / self.sample_rate
                             if duration >= 0.5:
-                                logger.info(f"  Speech ended — {duration:.2f}s")
+                                logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> SENDING{RESET}     {duration:.2f}s audio")
                                 self._send_segment(audio_bytes, speech_start_time, duration)
         except Exception as e:
             logger.error(f"Audio loop error: {e}")
@@ -172,8 +189,8 @@ class SpeakerClient:
             image_height=self._latest_frame_h
         )
         self._segments_to_send.put(segment)
-        has_image = "+" if self._latest_frame_jpeg else "-"
-        logger.info(f"  Sent: {duration:.2f}s audio {has_image}image → server")
+        has_image = f"{GREEN}+cam{RESET}" if self._latest_frame_jpeg else f"{DIM}-cam{RESET}"
+        logger.info(f"  {DIM}{_ts()}{RESET}  {BLUE}-> QUEUED{RESET}      {duration:.2f}s audio  {has_image}")
 
     def run_test_mode(self, use_camera=True):
         """
@@ -186,15 +203,24 @@ class SpeakerClient:
         ENERGY_THRESHOLD = 500
         self.is_active = True
 
-        logger.info("=" * 65)
-        logger.info("STANDALONE CLIENT — MacBook mic + webcam")
-        logger.info(f"  Server:    {self.server_address}")
-        logger.info(f"  Camera:    {'ON' if use_camera else 'OFF'}")
-        logger.info(f"  Threshold: {ENERGY_THRESHOLD} RMS")
-        logger.info("  Speak into mic. Press Ctrl+C to stop.")
-        if use_camera:
-            logger.info("  Press 'q' in camera window to stop.")
-        logger.info("=" * 65)
+        cam_status = f"{GREEN}ON{RESET}" if use_camera else f"{RED}OFF{RESET}"
+        print(f"""
+{CYAN}{BOLD}{'=' * 55}
+   SPEAKER + FACE RECOGNITION CLIENT
+{'=' * 55}{RESET}
+
+{BOLD}  Connection:{RESET}
+    Server    {self.server_address}
+    Session   {self.session_id}
+
+{BOLD}  Capture:{RESET}
+    Camera    {cam_status}
+    Mic       {GREEN}ON{RESET}  {DIM}(threshold: {ENERGY_THRESHOLD} RMS){RESET}
+
+{DIM}  Speak into mic. Press Ctrl+C to stop.{RESET}
+{DIM}  Press 'q' in camera window to stop.{RESET}
+{CYAN}{'=' * 55}{RESET}
+""")
 
         # Background threads: gRPC responses + audio capture
         Thread(target=self._handle_responses, daemon=True).start()
@@ -215,7 +241,7 @@ class SpeakerClient:
                 use_camera = False
 
         if use_camera:
-            logger.info("Webcam opened — capturing frames")
+            logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK WEBCAM{RESET}      capturing frames")
             try:
                 while self.is_active:
                     ret, frame = cap.read()
@@ -231,10 +257,10 @@ class SpeakerClient:
 
                     cv2.imshow("Speaker Client - Camera", frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
-                        logger.info("Camera window closed (q pressed)")
+                        logger.info(f"\n  {YELLOW}Camera closed (q pressed){RESET}")
                         break
             except KeyboardInterrupt:
-                logger.info("Stopping...")
+                logger.info(f"\n  {YELLOW}Stopping...{RESET}")
             finally:
                 cap.release()
                 cv2.destroyAllWindows()
@@ -244,10 +270,10 @@ class SpeakerClient:
                 while self.is_active:
                     time.sleep(0.1)
             except KeyboardInterrupt:
-                logger.info("Stopping...")
+                logger.info(f"\n  {YELLOW}Stopping...{RESET}")
 
         self.is_active = False
-        logger.info("Client finished.")
+        print(f"\n  {GREEN}Client finished.{RESET}\n")
 
 
 def main():
