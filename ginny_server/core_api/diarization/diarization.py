@@ -8,7 +8,9 @@ import torch
 from pathlib import Path
 from typing import Optional, Dict, List
 
-# Add DiariZen to path so we can import its modules
+# Add vendored pyannote-audio (DiariZen's fork with config/seg_duration/device params)
+# and DiariZen itself to path. pip's pyannote.audio must be uninstalled.
+sys.path.insert(0, "/workspace/diarization/DiariZen/pyannote-audio")
 sys.path.insert(0, "/workspace/diarization/DiariZen")
 
 from diarizen.pipelines.inference import DiariZenPipeline

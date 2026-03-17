@@ -14,6 +14,12 @@ Does NOT start: Whisper, LLMs, Reasoner, Executor, MediaService, SecondaryChanne
 
 Client sends audio + camera frames → server identifies face + voice → returns results.
 """
+# MUST be first — set paths for vendored pyannote-audio + DiariZen
+# before any other imports trigger the import chain
+import sys
+sys.path.insert(0, "/workspace/diarization/DiariZen/pyannote-audio")
+sys.path.insert(0, "/workspace/diarization/DiariZen")
+
 import grpc
 import logging
 from concurrent import futures

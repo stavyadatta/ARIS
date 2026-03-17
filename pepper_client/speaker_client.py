@@ -11,6 +11,7 @@ The server handles all the heavy lifting (face recognition + voice recognition).
 Your MacBook only captures and sends raw data.
 """
 import io
+import os
 import sys
 import time
 import uuid
@@ -21,7 +22,10 @@ import argparse
 import numpy as np
 from threading import Thread
 
-sys.path.insert(0, "/workspace/grpc_communication")
+# Auto-detect grpc_communication path (works on both server and MacBook)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_grpc_path = os.path.join(os.path.dirname(_script_dir), "grpc_communication")
+sys.path.insert(0, _grpc_path)
 import grpc_pb2
 import grpc_pb2_grpc
 
