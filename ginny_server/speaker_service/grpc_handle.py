@@ -82,6 +82,164 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
             _log("!!", "FACE ERROR", str(e), _RED)
             return None
 
+    def _render_session_video(self, session_id, frames, full_audio, sample_rate,
+                              voice_results, diar_results):
+        """Render an annotated video from a completed real-time session."""
+        import os
+        import wave
+        import subprocess
+        import tempfile
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        output_dir = "/workspace/database/recordings"
+        os.makedirs(output_dir, exist_ok=True)
+
+        _log(">>", "RENDER VIDEO", f"session={session_id}, {len(frames)} frames", _CYAN)
+
+        if not frames:
+            return
+
+        # Determine fps from frame timestamps
+        if len(frames) >= 2:
+            total_time = frames[-1][0] - frames[0][0]
+            fps = len(frames) / max(total_time, 0.1)
+            fps = min(max(fps, 1.0), 30.0)  # clamp to 1-30
+        else:
+            fps = 10.0
+
+        # Decode first frame to get dimensions
+        first_jpeg = frames[0][1]
+        first_img = cv2.imdecode(np.frombuffer(first_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if first_img is None:
+            _log("!!", "RENDER", "Could not decode first frame", _RED)
+            return
+        frame_h, frame_w = first_img.shape[:2]
+
+        # Voice/diar color maps
+        voice_colors = {}
+        diar_colors = {}
+        VCOLORS = [(0,255,0),(0,200,100),(0,255,200),(100,255,0),(0,180,0)]
+        DCOLORS = [(0,200,255),(255,100,200),(100,255,255),(200,100,255)]
+        FCOLORS = [(255,100,50),(200,50,50),(255,150,0),(180,80,120)]
+        face_colors = {}
+
+        def _gc(identity, cmap, palette):
+            if identity not in cmap:
+                cmap[identity] = palette[len(cmap) % len(palette)]
+            return cmap[identity]
+
+        def _vt_local(s):
+            m, sec = divmod(int(s), 60)
+            return f"{m:02d}:{sec:02d}"
+
+        def get_voice_at(t):
+            for s, e, vid, conf, status in voice_results:
+                if s <= t <= e:
+                    return vid, conf
+            return None, 0.0
+
+        def get_diar_at(t):
+            active = []
+            for s, e, dlabel, vid in diar_results:
+                if s <= t <= e:
+                    active.append((dlabel, vid))
+            return active
+
+        # Write video frames
+        temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        temp_video.close()
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(temp_video.name, fourcc, fps, (frame_w, frame_h))
+
+        num_diar_speakers = len(set(dl for _, _, dl, _ in diar_results))
+
+        for i, (ts, jpeg, w, h, face_id) in enumerate(frames):
+            frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is None:
+                continue
+
+            # Resize if needed
+            if frame.shape[1] != frame_w or frame.shape[0] != frame_h:
+                frame = cv2.resize(frame, (frame_w, frame_h))
+
+            # Face label (from recorded face_id)
+            if face_id and face_id != "unknown":
+                fc = _gc(face_id, face_colors, FCOLORS)
+                cv2.putText(frame, f"FACE: {face_id}", (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, fc, 2)
+
+            # Timestamp
+            cv2.putText(frame, _vt_local(ts), (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+            # Voice bar (bottom)
+            active_voice, vconf = get_voice_at(ts)
+            if active_voice:
+                vc = _gc(active_voice, voice_colors, VCOLORS)
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (0, frame_h - 70), (frame_w, frame_h), (0, 0, 0), -1)
+                cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+                cv2.putText(frame, f"VOICE: {active_voice}", (10, frame_h - 45),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, vc, 2)
+                bar_w = int(vconf * 200)
+                cv2.rectangle(frame, (10, frame_h-25), (10+bar_w, frame_h-15), vc, -1)
+                cv2.rectangle(frame, (10, frame_h-25), (210, frame_h-15), (100,100,100), 1)
+                cv2.putText(frame, f"{vconf:.2f}", (220, frame_h-15),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200,200,200), 1)
+                cv2.circle(frame, (frame_w-30, 30), 10, vc, -1)
+            else:
+                cv2.circle(frame, (frame_w-30, 30), 10, (80,80,80), -1)
+
+            # Diarization panel (top-right)
+            cv2.putText(frame, f"DIAR: {num_diar_speakers} spk", (frame_w-180, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
+            active_diar = get_diar_at(ts)
+            dy = 55
+            for dlabel, vid in active_diar:
+                dc = _gc(dlabel, diar_colors, DCOLORS)
+                cv2.circle(frame, (frame_w-175, dy-5), 6, dc, -1)
+                txt = dlabel
+                if vid and not vid.startswith("pending"):
+                    txt += f" = {vid}"
+                cv2.putText(frame, txt, (frame_w-163, dy),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, dc, 1)
+                dy += 20
+
+            out.write(frame)
+
+        out.release()
+
+        # Mux audio
+        temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        temp_wav.close()
+        import wave as wave_mod
+        with wave_mod.open(temp_wav.name, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(bytes(full_audio))
+
+        final_path = os.path.join(output_dir, f"session_{session_id}.mp4")
+        try:
+            subprocess.run([
+                "ffmpeg", "-y", "-i", temp_video.name, "-i", temp_wav.name,
+                "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0",
+                "-shortest", final_path
+            ], capture_output=True, check=True)
+            os.remove(temp_video.name)
+        except Exception:
+            # Fallback: video only
+            import shutil
+            shutil.move(temp_video.name, final_path)
+
+        os.remove(temp_wav.name)
+
+        _log("**", "VIDEO SAVED",
+             f"{_BOLD}{final_path}{_RESET}  "
+             f"({os.path.getsize(final_path) / 1024 / 1024:.1f}MB, "
+             f"{len(frames)} frames, {len(voice_results)} voice segments)",
+             _GREEN)
+
     def RecognizeSpeakers(self, request_iterator, context):
         """
         Bidirectional streaming RPC with sliding-window diarization + multi-sample ReID.
@@ -109,6 +267,13 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
         buffer_start_time = 0.0  # absolute time of buffer start
         window_count = 0
 
+        # Recording: collect frames + audio + results for post-session video
+        recorded_full_audio = bytearray()   # all audio received
+        recorded_frames = []                 # [(timestamp, jpeg_bytes, w, h, face_id)]
+        recorded_voice_results = []          # [(seg_start, seg_end, voice_id, confidence, status)]
+        recorded_diar_results = []           # [(seg_start, seg_end, diar_label, voice_id)]
+        session_start_time = None
+
         # Init enrollment buffer for this session
         self.speaker_recognition.init_enrollment_buffer()
 
@@ -118,6 +283,9 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                 sample_rate = request.sample_rate or 16000
                 session_id = request.session_id
                 video_ts = request.video_timestamp
+
+                if session_start_time is None:
+                    session_start_time = __import__('time').time()
 
                 # === FACE RECOGNITION (immediate, every frame) ===
                 if request.image_data:
@@ -129,11 +297,20 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                     if detected_face is not None:
                         current_face_id = detected_face
 
+                    # Record frame for post-session video
+                    elapsed = __import__('time').time() - session_start_time
+                    recorded_frames.append((
+                        elapsed, request.image_data,
+                        request.image_width, request.image_height,
+                        current_face_id or "unknown"
+                    ))
+
                 if current_face_id is None and request.face_id:
                     current_face_id = request.face_id
 
-                # === ACCUMULATE AUDIO ===
+                # === ACCUMULATE AUDIO (both for windowing and full recording) ===
                 audio_buffer.extend(audio_data)
+                recorded_full_audio.extend(audio_data)
                 buffer_duration = (len(audio_buffer) // 2) / sample_rate
 
                 # === WINDOW READY? Run diarization + ReID ===
@@ -208,6 +385,13 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                                     status=result["status"],
                                     video_timestamp=video_ts
                                 )
+                                # Record for post-session video
+                                recorded_voice_results.append((
+                                    seg_start, seg_end, voice_id, confidence, result["status"]
+                                ))
+                                recorded_diar_results.append((
+                                    seg_start, seg_end, diar_label, voice_id
+                                ))
 
                             _log("..", diar_label,
                                  f"{cluster_dur:.1f}s → {_BOLD}{voice_id}{_RESET}  "
@@ -235,6 +419,20 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
             if session_id is not None:
                 self.diarization.clear_session(session_id)
             _log("--", "SESSION END", f"{session_id}  windows={window_count}", _DIM)
+
+            # === RENDER POST-SESSION VIDEO ===
+            if recorded_frames and len(recorded_frames) > 10:
+                try:
+                    self._render_session_video(
+                        session_id or "unknown",
+                        recorded_frames, recorded_full_audio, sample_rate,
+                        recorded_voice_results, recorded_diar_results
+                    )
+                except Exception as e:
+                    _log("!!", "VIDEO ERROR", f"Failed to render session video: {e}", _RED)
+                    traceback.print_exc()
+            else:
+                _log("--", "NO VIDEO", f"Only {len(recorded_frames)} frames, skipping video render", _DIM)
 
     def ProcessVideo(self, request_iterator, context):
         """

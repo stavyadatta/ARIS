@@ -610,9 +610,11 @@ class SpeakerClient:
         video_service.setParameter(0, 8, 1)  # Vertical flip
         logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK CAMERA{RESET}      Top camera subscribed")
 
-        # Wake robot
+        # Wake robot and stand normally
         motion.wakeUp()
-        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK MOTION{RESET}      Robot awake")
+        posture = session.service("ALRobotPosture")
+        posture.goToPosture("StandInit", 0.5)
+        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK MOTION{RESET}      Robot awake, standing normally")
 
         # ---- Audio capture via qi service (processRemote callback) ----
         # We need to register a qi service that receives audio buffers.
