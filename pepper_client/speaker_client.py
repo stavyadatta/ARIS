@@ -549,21 +549,21 @@ class SpeakerClient:
         except Exception as e:
             logger.error(f"  {RED}!! Error: {e}{RESET}")
 
-    def run_pepper_mode(self, robot_ip, robot_port=9559, movement_cooldown=5.0):
+    def run_pepper_mode(self, robot_ip, robot_port=9559, movement_cooldown=5.0,
+                        listen_ip="192.168.0.50", listen_port=9559):
         """
         Run on Pepper robot with:
-        - Audio from Pepper's mic (16kHz mono via ALAudioDevice)
-        - Camera from Pepper's camera (if available)
+        - Audio from Pepper's mic (16kHz mono via ALAudioDevice + processRemote callback)
+        - Camera from Pepper's top camera (1280x960 RGB via ALVideoDevice)
         - Sound localisation via ALSoundLocalization → body rotation toward speaker
-        - Speaker recognition via gRPC to server
-
-        Audio segments are longer (min 2s) for better localisation + ReID.
-        Direction is averaged over the full speech segment for stability.
+        - Speaker recognition via gRPC to server (audio + camera frames)
         """
         try:
             import qi
-        except ImportError:
-            logger.error(f"  {RED}!! qi (NAOqi) not installed. Use --test-mode for host mic.{RESET}")
+            import cv2
+            from PIL import Image as PILImage
+        except ImportError as e:
+            logger.error(f"  {RED}!! Missing dependency: {e}. Need qi + opencv + Pillow.{RESET}")
             return
 
         connection_url = f"tcp://{robot_ip}:{robot_port}"
@@ -576,7 +576,8 @@ class SpeakerClient:
     Address   {connection_url}
 
 {BOLD}  Pipeline:{RESET}
-    Audio     Pepper mic (16kHz mono)
+    Audio     Pepper mic (16kHz mono) → gRPC
+    Camera    Pepper top cam (1280x960) → JPEG → gRPC
     Localise  ALSoundLocalization → body rotation
     Recog     gRPC → {self.server_address}
 
@@ -592,127 +593,207 @@ class SpeakerClient:
         # Services
         motion = session.service("ALMotion")
         memory = session.service("ALMemory")
-        audio_service = session.service("ALAudioDevice")
+        audio_device = session.service("ALAudioDevice")
         sound_loc = session.service("ALSoundLocalization")
+        video_service = session.service("ALVideoDevice")
 
         # Enable sound localisation
         sound_loc.subscribe("SpeakerClient")
         sound_loc.setParameter("Sensitivity", 0.8)
-        audio_service.enableEnergyComputation()
+        audio_device.enableEnergyComputation()
         logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK SERVICES{RESET}    ALSoundLocalization + ALAudioDevice ready")
+
+        # Subscribe to camera
+        video_client = video_service.subscribeCamera(
+            "SpeakerClientCam", 0, 5, 11, 10  # top cam, 1280x960, RGB, 10fps
+        )
+        video_service.setParameter(0, 8, 1)  # Vertical flip
+        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK CAMERA{RESET}      Top camera subscribed")
 
         # Wake robot
         motion.wakeUp()
-        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK MOTION{RESET}      Robot awake, body stiffness ON")
+        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK MOTION{RESET}      Robot awake")
 
-        self.is_active = True
+        # ---- Audio capture via qi service (processRemote callback) ----
+        # We need to register a qi service that receives audio buffers.
+        # This is how AudioManager2 and SRPAudioService work.
+        _audio_buffer = io.BytesIO()
+        _audio_lock = __import__('threading').Lock()
+        _is_speech = [False]
+        _silence_count = [0]
+        _speech_start = [0.0]
+        _conv_start = time.time()
+        _direction_samples = []
+        _last_move_time = [0.0]
+        _energy_threshold = 370
+        _max_silence = 20
+        _min_segment = 2.0
+        _client_ref = self  # reference for the callback
 
-        # Start gRPC response handler
-        Thread(target=self._handle_responses, daemon=True).start()
+        class PepperAudioCapture(object):
+            """qi service that receives audio via processRemote and does VAD."""
+            def __init__(self):
+                self.module_name = "PepperAudioCapture"
 
-        # VAD + localisation state
-        module_name = "SpeakerClientAudio"
-        segment_buffer = io.BytesIO()
-        is_in_speech = False
-        silence_count = 0
-        speech_start_time = 0.0
-        conversation_start = time.time()
-        energy_threshold = 370
-        max_silence_loops = 20      # longer than before — ~1.3s of silence before flush
-        min_segment_duration = 2.0  # longer segments for better localisation + ReID
-        last_movement_time = 0.0
+            def init_service(self, sess):
+                self.audio_service = sess.service("ALAudioDevice")
 
-        # Direction samples collected during speech
-        direction_samples = []  # list of (azimuth, confidence)
+            def start(self):
+                self.audio_service.setClientPreferences(
+                    self.module_name, 16000, 1, 0  # 16kHz, mono
+                )
+                self.audio_service.subscribe(self.module_name)
 
-        # Subscribe to audio
-        audio_service.setClientPreferences(module_name, self.sample_rate, 1, 0)
-        audio_service.subscribe(module_name)
+            def stop(self):
+                try:
+                    self.audio_service.unsubscribe(self.module_name)
+                except Exception:
+                    pass
 
-        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK AUDIO{RESET}       Subscribed, listening...")
-        logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}  Energy threshold: {energy_threshold}{RESET}")
-        logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}  Min segment: {min_segment_duration}s  Silence loops: {max_silence_loops}{RESET}")
-        logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}  Movement cooldown: {movement_cooldown}s{RESET}")
+            def processRemote(self, nbOfChannels, nbOfSamplesByChannel, timeStamp, inputBuffer):
+                if not _client_ref.is_active:
+                    return
 
-        try:
-            while self.is_active:
-                time.sleep(0.05)  # polling loop
+                current_energy = self.audio_service.getFrontMicEnergy()
+                current_time = time.time() - _conv_start
 
-                current_energy = audio_service.getFrontMicEnergy()
-                current_time = time.time() - conversation_start
-
-                # Poll sound localisation continuously during speech
-                if is_in_speech:
+                # Poll localisation during speech
+                if _is_speech[0]:
                     try:
                         loc_data = memory.getData("ALSoundLocalization/SoundLocated")
                         if loc_data and len(loc_data) >= 2:
                             az = loc_data[1][0]
                             conf = loc_data[1][2]
                             if conf > 0.3:
-                                direction_samples.append((az, conf))
+                                _direction_samples.append((az, conf))
                     except Exception:
                         pass
 
-                if current_energy > energy_threshold:
-                    silence_count = 0
-                    if not is_in_speech:
-                        is_in_speech = True
-                        segment_buffer = io.BytesIO()
-                        speech_start_time = current_time
-                        direction_samples = []
-                        logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}<< SPEECH{RESET}      started at {current_time:.1f}s  {DIM}energy={current_energy}{RESET}")
+                if current_energy > _energy_threshold:
+                    _silence_count[0] = 0
+                    if not _is_speech[0]:
+                        _is_speech[0] = True
+                        with _audio_lock:
+                            _audio_buffer.seek(0)
+                            _audio_buffer.truncate(0)
+                        _speech_start[0] = current_time
+                        _direction_samples.clear()
+                        logger.info(
+                            f"  {DIM}{_ts()}{RESET}  {CYAN}<< SPEECH{RESET}      "
+                            f"at {current_time:.1f}s  {DIM}energy={current_energy}{RESET}"
+                        )
 
-                    # We can't directly get audio bytes from the polling loop.
-                    # The audio is accumulated via the gRPC stream from processRemote.
-                    # For now, we track timing and send when silence detected.
+                    # Write audio bytes to buffer
+                    with _audio_lock:
+                        _audio_buffer.write(inputBuffer)
 
                 else:
-                    if is_in_speech:
-                        silence_count += 1
-                        if silence_count >= max_silence_loops:
-                            # Speech ended
-                            is_in_speech = False
-                            silence_count = 0
-                            segment_duration = current_time - speech_start_time
+                    if _is_speech[0]:
+                        # Still write during silence (capture trailing audio)
+                        with _audio_lock:
+                            _audio_buffer.write(inputBuffer)
 
-                            if segment_duration >= min_segment_duration:
-                                logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> SEGMENT{RESET}     {segment_duration:.2f}s")
+                        _silence_count[0] += 1
+                        if _silence_count[0] >= _max_silence:
+                            _is_speech[0] = False
+                            _silence_count[0] = 0
+                            duration = current_time - _speech_start[0]
 
-                                # === BODY MOVEMENT from averaged direction ===
+                            if duration >= _min_segment:
+                                with _audio_lock:
+                                    _audio_buffer.seek(0)
+                                    audio_bytes = _audio_buffer.read()
+
+                                logger.info(
+                                    f"  {DIM}{_ts()}{RESET}  {CYAN}>> SENDING{RESET}     "
+                                    f"{duration:.2f}s audio"
+                                )
+
+                                # Send to server via gRPC
+                                _client_ref._send_segment(
+                                    audio_bytes, _speech_start[0], duration
+                                )
+
+                                # Body movement from averaged direction
                                 now = time.time()
-                                if direction_samples and (now - last_movement_time) > movement_cooldown:
-                                    # Weighted average by confidence
-                                    total_conf = sum(c for _, c in direction_samples)
+                                if _direction_samples and (now - _last_move_time[0]) > movement_cooldown:
+                                    total_conf = sum(c for _, c in _direction_samples)
                                     if total_conf > 0:
-                                        avg_azimuth = sum(az * c for az, c in direction_samples) / total_conf
-                                        avg_conf = total_conf / len(direction_samples)
-
+                                        avg_az = sum(az * c for az, c in _direction_samples) / total_conf
+                                        avg_conf = total_conf / len(_direction_samples)
                                         logger.info(
                                             f"  {DIM}{_ts()}{RESET}  {MAGENTA}>> MOVE BODY{RESET}   "
-                                            f"azimuth={avg_azimuth:.2f}rad ({avg_azimuth * 57.3:.0f}°)  "
+                                            f"az={avg_az:.2f}rad ({avg_az * 57.3:.0f}°)  "
                                             f"conf={avg_conf:.2f}  "
-                                            f"{DIM}({len(direction_samples)} samples){RESET}"
+                                            f"{DIM}({len(_direction_samples)} samples){RESET}"
                                         )
-
                                         try:
-                                            motion.moveTo(0, 0, avg_azimuth)
-                                            last_movement_time = time.time()
+                                            motion.moveTo(0, 0, avg_az)
+                                            _last_move_time[0] = time.time()
                                         except Exception as e:
-                                            logger.error(f"  {DIM}{_ts()}{RESET}  {RED}!! MOVE ERROR{RESET}  {e}")
+                                            logger.error(f"  {DIM}{_ts()}{RESET}  {RED}!! MOVE{RESET}  {e}")
 
-                                direction_samples = []
+                                _direction_samples.clear()
                             else:
-                                logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}-- SKIP{RESET}        {segment_duration:.2f}s (too short, need {min_segment_duration}s)")
+                                logger.info(
+                                    f"  {DIM}{_ts()}{RESET}  {DIM}-- SKIP{RESET}        "
+                                    f"{duration:.2f}s (need {_min_segment}s){RESET}"
+                                )
 
+        # Register and start audio capture service
+        audio_capture = PepperAudioCapture()
+        listen_url = f"tcp://{listen_ip}:{listen_port}"
+        session.listen(listen_url)
+        session.registerService("PepperAudioCapture", audio_capture)
+        audio_capture.init_service(session)
+        audio_capture.start()
+        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK AUDIO{RESET}       Audio capture registered, listening on {listen_url}")
+
+        self.is_active = True
+
+        # Start gRPC response handler
+        Thread(target=self._handle_responses, daemon=True).start()
+
+        # Camera capture thread
+        def _pepper_camera_loop():
+            while self.is_active:
+                try:
+                    raw = video_service.getImageRemote(video_client)
+                    video_service.releaseImage(video_client)
+                    if raw is None:
+                        time.sleep(0.05)
+                        continue
+                    w, h = raw[0], raw[1]
+                    pil_img = PILImage.frombytes("RGB", (w, h), bytes(raw[6]))
+                    np_img = np.array(pil_img)
+                    cv2_img = np_img[:, :, ::-1]  # RGB → BGR
+                    cv2_img = cv2.flip(cv2_img, 0)  # Pepper cam is flipped
+                    _, jpeg = cv2.imencode('.jpg', cv2_img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    self._latest_frame_jpeg = jpeg.tobytes()
+                    self._latest_frame_w = w
+                    self._latest_frame_h = h
+                except Exception as e:
+                    logger.debug(f"Camera error: {e}")
+                time.sleep(0.1)
+
+        Thread(target=_pepper_camera_loop, daemon=True).start()
+        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK CAM THREAD{RESET}  Capturing frames in background")
+
+        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}{BOLD}READY{RESET}          Listening for speech...")
+
+        # Main thread just waits
+        try:
+            while self.is_active:
+                time.sleep(0.5)
         except KeyboardInterrupt:
             logger.info(f"\n  {YELLOW}Stopping...{RESET}")
 
-        # Cleanup
+        # ---- SHUTDOWN ----
         self.is_active = False
         logger.info(f"  {DIM}{_ts()}{RESET}  {YELLOW}.. SHUTDOWN{RESET}     Stopping Pepper services...")
 
         try:
-            audio_service.unsubscribe(module_name)
+            audio_capture.stop()
             logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}   Audio unsubscribed{RESET}")
         except Exception:
             pass
@@ -720,6 +801,12 @@ class SpeakerClient:
         try:
             sound_loc.unsubscribe("SpeakerClient")
             logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}   Sound localisation unsubscribed{RESET}")
+        except Exception:
+            pass
+
+        try:
+            video_service.unsubscribe(video_client)
+            logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}   Camera unsubscribed{RESET}")
         except Exception:
             pass
 
@@ -883,6 +970,10 @@ Examples:
                         help="Pepper robot IP (enables robot mode with localisation + body movement)")
     parser.add_argument("--robot-port", type=int, default=9559,
                         help="Pepper NAOqi port (default: 9559)")
+    parser.add_argument("--listen-ip", type=str, default="192.168.0.50",
+                        help="IP for qi session listener on Pi (default: 192.168.0.50)")
+    parser.add_argument("--listen-port", type=int, default=9559,
+                        help="Port for qi session listener on Pi (default: 9559)")
     args = parser.parse_args()
 
     client = SpeakerClient(server_address=args.server)
@@ -893,7 +984,8 @@ Examples:
     elif args.video:
         client.run_video_mode(args.video)
     elif args.robot_ip:
-        client.run_pepper_mode(args.robot_ip, args.robot_port)
+        client.run_pepper_mode(args.robot_ip, args.robot_port,
+                               listen_ip=args.listen_ip, listen_port=args.listen_port)
     elif args.test_mode:
         client.run_test_mode(use_camera=not args.no_camera)
     else:
