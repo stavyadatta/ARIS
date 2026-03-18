@@ -84,27 +84,42 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
 
     def RecognizeSpeakers(self, request_iterator, context):
         """
-        Bidirectional streaming RPC with integrated face recognition.
+        Bidirectional streaming RPC with sliding-window diarization + multi-sample ReID.
 
-        For each segment:
-        1. If image_data present → face recognition → face_id
-        2. Otherwise use face_id from request (client-provided)
-        3. SHORT PATH: immediate voice embedding + match + enroll
-        4. LONG PATH: buffer audio → diarize at 10s → corrections
+        Audio accumulates in a per-session buffer. When buffer reaches WINDOW_SIZE (30s):
+        1. Run DiariZen on the buffer → speaker clusters
+        2. Concat audio per cluster → ERes2NetV2 embedding
+        3. match_or_buffer against voice_db → voice_id or pending enrollment
+        4. Yield SpeakerResult for each cluster's segments
+        5. Shift buffer forward (keep WINDOW_OVERLAP for continuity)
+
+        Face recognition runs immediately on each image frame (decoupled).
         """
+        WINDOW_SIZE = 30.0      # seconds
+        WINDOW_OVERLAP = 10.0   # seconds
+        MIN_CLUSTER_AUDIO = 3.0 # seconds — skip shorter clusters
+        MIN_ENROLL_SAMPLES = 3
+
         session_id = None
-        current_face_id = None  # track across segments
+        current_face_id = None
+        sample_rate = 16000
+
+        # Per-session audio buffer
+        audio_buffer = bytearray()
+        buffer_start_time = 0.0  # absolute time of buffer start
+        window_count = 0
+
+        # Init enrollment buffer for this session
+        self.speaker_recognition.init_enrollment_buffer()
 
         try:
             for request in request_iterator:
                 audio_data = request.audio_data
                 sample_rate = request.sample_rate or 16000
                 session_id = request.session_id
-                segment_start = request.segment_start_time
-                segment_duration = request.segment_duration
                 video_ts = request.video_timestamp
 
-                # === FACE RECOGNITION (if image provided) ===
+                # === FACE RECOGNITION (immediate, every frame) ===
                 if request.image_data:
                     detected_face = self._extract_face_id(
                         request.image_data,
@@ -114,82 +129,112 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                     if detected_face is not None:
                         current_face_id = detected_face
 
-                # Fall back to client-provided face_id if no image
                 if current_face_id is None and request.face_id:
                     current_face_id = request.face_id
 
-                # === SHORT PATH: Immediate single-speaker result ===
-                try:
-                    min_bytes = int(0.5 * sample_rate * 2)
-                    if len(audio_data) >= min_bytes:
-                        result = self.speaker_recognition.identify_speaker(
-                            audio_data, sample_rate,
-                            current_face_id=current_face_id
+                # === ACCUMULATE AUDIO ===
+                audio_buffer.extend(audio_data)
+                buffer_duration = (len(audio_buffer) // 2) / sample_rate
+
+                # === WINDOW READY? Run diarization + ReID ===
+                if buffer_duration >= WINDOW_SIZE:
+                    window_count += 1
+                    window_audio = bytes(audio_buffer)
+                    win_start = buffer_start_time
+                    win_end = win_start + buffer_duration
+
+                    _log(">>", f"WINDOW {window_count}",
+                         f"[{win_start:.0f}s - {win_end:.0f}s]  {buffer_duration:.1f}s audio",
+                         _CYAN)
+
+                    # Run diarization on the window
+                    try:
+                        diar_segments = self.diarization.diarize(window_audio, sample_rate)
+                    except Exception as e:
+                        _log("!!", "DIAR ERROR", str(e), _RED)
+                        # Shift buffer and continue
+                        shift_bytes = int(WINDOW_SIZE - WINDOW_OVERLAP) * sample_rate * 2
+                        audio_buffer = audio_buffer[shift_bytes:]
+                        buffer_start_time += (WINDOW_SIZE - WINDOW_OVERLAP)
+                        continue
+
+                    # Group diarized segments by speaker label
+                    clusters = {}
+                    for seg in diar_segments:
+                        label = seg["speaker"]
+                        if label not in clusters:
+                            clusters[label] = {"audio": bytearray(), "segments": []}
+                        clusters[label]["audio"].extend(seg["audio"])
+                        clusters[label]["segments"].append(
+                            (seg["start"] + win_start, seg["end"] + win_start)
                         )
-                        yield pb2.SpeakerResult(
-                            speaker_id=result["face_id"] or "",
-                            confidence=result["confidence"],
-                            segment_start_time=segment_start,
-                            segment_duration=segment_duration,
-                            is_new_speaker=result["is_new"],
-                            session_id=session_id,
-                            is_correction=False,
-                            status=result["status"],
-                            video_timestamp=video_ts
-                        )
-                except Exception as e:
-                    _log("!!", "VOICE ERROR", str(e), _RED)
-                    traceback.print_exc()
 
-                # === LONG PATH: Buffer accumulation + batch diarization ===
-                try:
-                    diar_segments = self.diarization.accumulate_segment(
-                        session_id=session_id,
-                        audio_data=audio_data,
-                        segment_start_time=segment_start,
-                        sample_rate=sample_rate
-                    )
+                    _log("..", "CLUSTERS",
+                         f"{len(clusters)} speakers in window {window_count}",
+                         _GREEN)
 
-                    if diar_segments is not None:
-                        for seg in diar_segments:
-                            seg_audio = seg["audio"]
-                            seg_start = seg["start"]
-                            seg_end = seg["end"]
+                    # For each cluster: ERes2NetV2 embedding → match/buffer
+                    for diar_label, cluster in clusters.items():
+                        cluster_audio = bytes(cluster["audio"])
+                        cluster_dur = (len(cluster_audio) // 2) / sample_rate
 
-                            min_seg_bytes = int(0.5 * sample_rate * 2)
-                            if len(seg_audio) < min_seg_bytes:
-                                continue
+                        if cluster_dur < MIN_CLUSTER_AUDIO:
+                            _log("--", "SKIP",
+                                 f"{diar_label}: {cluster_dur:.1f}s (too short)", _DIM)
+                            continue
 
-                            try:
-                                result = self.speaker_recognition.identify_speaker(
-                                    seg_audio, sample_rate,
-                                    current_face_id=current_face_id
-                                )
+                        try:
+                            embedding = self.speaker_recognition.extract_embedding(
+                                cluster_audio, sample_rate
+                            )
+                            result = self.speaker_recognition.match_or_buffer(
+                                embedding, cluster_audio, sample_rate,
+                                min_samples=MIN_ENROLL_SAMPLES
+                            )
+
+                            voice_id = result["voice_id"] or result.get("pending_id", "")
+                            confidence = result["confidence"]
+
+                            # Yield a result for each segment in this cluster
+                            for seg_start, seg_end in cluster["segments"]:
                                 yield pb2.SpeakerResult(
-                                    speaker_id=result["face_id"] or "",
-                                    confidence=result["confidence"],
+                                    speaker_id=voice_id,
+                                    confidence=confidence,
                                     segment_start_time=seg_start,
                                     segment_duration=seg_end - seg_start,
                                     is_new_speaker=result["is_new"],
                                     session_id=session_id,
-                                    is_correction=True,
+                                    is_correction=False,
                                     status=result["status"],
                                     video_timestamp=video_ts
                                 )
-                            except Exception as e:
-                                _log("!!", "DIAR ERROR", str(e), _RED)
-                                traceback.print_exc()
 
-                except Exception as e:
-                    _log("!!", "BUFFER ERROR", str(e), _RED)
-                    traceback.print_exc()
+                            _log("..", diar_label,
+                                 f"{cluster_dur:.1f}s → {_BOLD}{voice_id}{_RESET}  "
+                                 f"conf={confidence:.2f}  {_DIM}{result['status']}{_RESET}",
+                                 _GREEN)
+
+                        except Exception as e:
+                            _log("!!", "CLUSTER ERR", f"{diar_label}: {e}", _RED)
+
+                    # Shift buffer: keep last WINDOW_OVERLAP seconds
+                    shift_bytes = int((WINDOW_SIZE - WINDOW_OVERLAP) * sample_rate * 2)
+                    audio_buffer = audio_buffer[shift_bytes:]
+                    buffer_start_time += (WINDOW_SIZE - WINDOW_OVERLAP)
 
         except Exception as e:
             _log("!!", "FATAL ERROR", str(e), _RED)
             traceback.print_exc()
         finally:
+            # Flush pending enrollments at end of session
+            if hasattr(self.speaker_recognition, '_pending'):
+                flushed = self.speaker_recognition.flush_all_pending(sample_rate, min_samples=2)
+                for r in flushed:
+                    _log("**", "FLUSH", f"Enrolled {r['voice_id']} at session end", _GREEN)
+
             if session_id is not None:
                 self.diarization.clear_session(session_id)
+            _log("--", "SESSION END", f"{session_id}  windows={window_count}", _DIM)
 
     def ProcessVideo(self, request_iterator, context):
         """
