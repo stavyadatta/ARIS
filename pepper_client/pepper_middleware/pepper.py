@@ -253,6 +253,23 @@ class Pepper():
         self.hand_manager.lower_right_hand()
         self.do_not_move_head.clear()
 
+    def say_thanks_with_audio(self):
+        """Play the pre-recorded thank you audio."""
+        THANKS_AUDIO_PATH = "/home/nao/thank_you.wav"
+        THANKS_DURATION = 5  # seconds – adjust to match actual audio length
+
+        audio_player = self.session.service("ALAudioPlayer")
+
+        self.do_not_move_head.set()
+
+        file_id = audio_player.loadFile(THANKS_AUDIO_PATH)
+        audio_player.play(file_id, _async=True)
+
+        time.sleep(THANKS_DURATION)
+
+        audio_player.stopAll()
+        self.do_not_move_head.clear()
+
     def main(self):
         audio_data, sample_rate, stopped_via_button = self.get_audio()
         if Buttons_vals.consume_birthday():
@@ -270,7 +287,7 @@ class Pepper():
             self.ask_question_with_audio()
             self.main()
         elif Buttons_vals.consume_say_thanks():
-            self.speech_manager.say("Thank you very much, I really appreciate it!")
+            self.say_thanks_with_audio()
             self.main()
 
         height, width = 240, 320

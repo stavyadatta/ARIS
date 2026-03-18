@@ -26,6 +26,9 @@ class HandManager:
         # ElbowYaw: rotated so hand faces forward
         # ElbowRoll: straighten the elbow
         # WristYaw: neutral
+        # Go to init posture first so the arm starts from a known position
+        self.posture_service.goToPosture("StandInit", speed)
+
         angles_deg = [-70.0, -15.0, 70.0, 2.0, 0.0]
         angles_rad = [a * DEG_TO_RAD for a in angles_deg]
 
