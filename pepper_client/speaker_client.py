@@ -596,25 +596,31 @@ class SpeakerClient:
         audio_device = session.service("ALAudioDevice")
         sound_loc = session.service("ALSoundLocalization")
         video_service = session.service("ALVideoDevice")
+        life_service = session.service("ALAutonomousLife")
+        posture = session.service("ALRobotPosture")
+
+        # Disable autonomous life (prevents Pepper from overriding camera/movement)
+        life_service.setAutonomousAbilityEnabled("All", False)
+        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK LIFE{RESET}        Autonomous abilities disabled")
+
+        # Wake robot and stand normally
+        motion.wakeUp()
+        posture.goToPosture("StandInit", 0.5)
+        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK MOTION{RESET}      Robot awake, standing normally")
 
         # Enable sound localisation
         sound_loc.subscribe("SpeakerClient")
         sound_loc.setParameter("Sensitivity", 0.8)
         audio_device.enableEnergyComputation()
-        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK SERVICES{RESET}    ALSoundLocalization + ALAudioDevice ready")
+        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK AUDIO SVC{RESET}   ALSoundLocalization + ALAudioDevice ready")
 
-        # Subscribe to camera
+        # Subscribe to camera (same settings as pepper.py: resolution=5, colorspace=11, fps=30)
         video_client = video_service.subscribeCamera(
-            "SpeakerClientCam", 0, 5, 11, 10  # top cam, 1280x960, RGB, 10fps
+            "SpeakerClientCam", 0, 5, 11, 30  # top cam, 1280x960, RGB, 30fps
         )
-        video_service.setParameter(0, 8, 1)  # Vertical flip
-        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK CAMERA{RESET}      Top camera subscribed")
-
-        # Wake robot and stand normally
-        motion.wakeUp()
-        posture = session.service("ALRobotPosture")
-        posture.goToPosture("StandInit", 0.5)
-        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK MOTION{RESET}      Robot awake, standing normally")
+        video_service.setAllParametersToDefault(0)
+        video_service.setParameter(0, 8, 1)  # Vertical flip (Pepper's cam is upside down)
+        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK CAMERA{RESET}      Top camera subscribed (1280x960 @ 30fps)")
 
         # ---- Audio capture via qi service (processRemote callback) ----
         # We need to register a qi service that receives audio buffers.
@@ -813,9 +819,14 @@ class SpeakerClient:
             pass
 
         try:
-            posture = session.service("ALRobotPosture")
             posture.goToPosture("Crouch", 0.5)
             logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}   Robot crouching{RESET}")
+        except Exception:
+            pass
+
+        try:
+            life_service.setAutonomousAbilityEnabled("All", True)
+            logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}   Autonomous life re-enabled{RESET}")
         except Exception:
             pass
 
