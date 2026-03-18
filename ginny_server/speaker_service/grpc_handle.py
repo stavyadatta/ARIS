@@ -190,3 +190,76 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
         finally:
             if session_id is not None:
                 self.diarization.clear_session(session_id)
+
+    def ProcessVideo(self, request_iterator, context):
+        """
+        Batch video processing RPC.
+        Client uploads video → server annotates with face+speaker labels → sends back.
+        """
+        import os
+        import tempfile
+        from speaker_service.video_processor import process_video
+
+        # Step 1: Receive video file chunks
+        temp_input = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        max_duration = 0.0
+        filename = "input.mp4"
+
+        for chunk in request_iterator:
+            if chunk.filename:
+                filename = chunk.filename
+            if chunk.max_duration_seconds > 0:
+                max_duration = chunk.max_duration_seconds
+            temp_input.write(chunk.data)
+
+        temp_input.close()
+        _log("<<", "VIDEO RECV", f"{filename} ({os.path.getsize(temp_input.name) / 1024 / 1024:.1f}MB), max_dur={max_duration}s", _CYAN)
+
+        # Step 2: Process video
+        output_path = None
+        try:
+            for progress, result_path in process_video(
+                temp_input.name, max_duration,
+                self.face_recognition, self.speaker_recognition, self.diarization
+            ):
+                if progress:
+                    yield pb2.VideoDownloadChunk(
+                        data=b"", filename="", is_last=False, progress=progress
+                    )
+                if result_path:
+                    output_path = result_path
+        except Exception as e:
+            _log("!!", "VIDEO ERROR", str(e), _RED)
+            traceback.print_exc()
+            os.remove(temp_input.name)
+            return
+
+        os.remove(temp_input.name)
+
+        if not output_path or not os.path.exists(output_path):
+            _log("!!", "VIDEO ERROR", "No output produced", _RED)
+            return
+
+        # Step 3: Stream annotated video back to client
+        out_filename = f"annotated_{filename}"
+        file_size = os.path.getsize(output_path)
+        _log(">>", "VIDEO SEND", f"{out_filename} ({file_size / 1024 / 1024:.1f}MB)", _GREEN)
+
+        CHUNK_SIZE = 1024 * 1024  # 1MB chunks
+        with open(output_path, 'rb') as f:
+            first = True
+            while True:
+                data = f.read(CHUNK_SIZE)
+                if not data:
+                    break
+                yield pb2.VideoDownloadChunk(
+                    data=data,
+                    filename=out_filename if first else "",
+                    is_last=False,
+                    progress=""
+                )
+                first = False
+
+        yield pb2.VideoDownloadChunk(data=b"", filename="", is_last=True, progress="Done")
+        os.remove(output_path)
+        _log("OK", "VIDEO DONE", f"Sent {out_filename} to client", _GREEN)

@@ -20,7 +20,7 @@ DESCRIPTOR = _descriptor.FileDescriptor(
   syntax='proto3',
   serialized_options=None,
   create_key=_descriptor._internal_create_key,
-  serialized_pb=b'\n\ngrpc.proto\x1a\x1bgoogle/protobuf/empty.proto\"\x88\x02\n\x0f\x41udioImgRequest\x12\x12\n\naudio_data\x18\x01 \x01(\x0c\x12\x13\n\x0bsample_rate\x18\x02 \x01(\x05\x12\x14\n\x0cnum_channels\x18\x03 \x01(\x05\x12\x16\n\x0e\x61udio_encoding\x18\x04 \x01(\t\x12\x19\n\x11\x61udio_description\x18\x05 \x01(\t\x12\x12\n\nimage_data\x18\x06 \x01(\x0c\x12\x14\n\x0cimage_format\x18\x07 \x01(\t\x12\x13\n\x0bimage_width\x18\x08 \x01(\x05\x12\x14\n\x0cimage_height\x18\t \x01(\x05\x12\x10\n\x08\x61pi_task\x18\n \x01(\t\x12\x1c\n\x14skip_face_validation\x18\x0b \x01(\x08\"3\n\x10\x41udioImgResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"9\n\tTextChunk\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\x10\n\x08is_final\x18\x02 \x01(\x08\x12\x0c\n\x04mode\x18\x03 \x01(\t\"\x1f\n\x0cQueueRemoval\x12\x0f\n\x07removed\x18\x01 \x01(\x08\"\x84\x01\n\x12ImageStreamRequest\x12\x12\n\nimage_data\x18\x01 \x01(\x0c\x12\x14\n\x0cimage_format\x18\x02 \x01(\t\x12\x13\n\x0bimage_width\x18\x03 \x01(\x05\x12\x14\n\x0cimage_height\x18\x04 \x01(\x05\x12\x19\n\x11image_description\x18\x05 \x01(\t\"A\n\x0f\x46\x61\x63\x65\x42oundingBox\x12\n\n\x02x1\x18\x01 \x01(\x05\x12\n\n\x02y1\x18\x02 \x01(\x05\x12\n\n\x02x2\x18\x03 \x01(\x05\x12\n\n\x02y2\x18\x04 \x01(\x05\"m\n\rSecondaryData\x12\x10\n\x08\x61pi_task\x18\x01 \x01(\t\x12\x1a\n\x05image\x18\x02 \x01(\x0b\x32\x06.ImageH\x00\x88\x01\x01\x12\x1a\n\x05\x61udio\x18\x03 \x01(\x0b\x32\x06.AudioH\x01\x88\x01\x01\x42\x08\n\x06_imageB\x08\n\x06_audio\"\x1b\n\x05Image\x12\x12\n\nimage_data\x18\x01 \x01(\x0c\"^\n\x05\x41udio\x12\x12\n\naudio_data\x18\x01 \x01(\x0c\x12\x13\n\x0bsample_rate\x18\x02 \x01(\x05\x12\x14\n\x0cnum_channels\x18\x03 \x01(\x05\x12\x16\n\x0e\x61udio_encoding\x18\x04 \x01(\t\"\x9f\x02\n\x13SpeakerAudioSegment\x12\x12\n\naudio_data\x18\x01 \x01(\x0c\x12\x13\n\x0bsample_rate\x18\x02 \x01(\x05\x12\x14\n\x0cnum_channels\x18\x03 \x01(\x05\x12\x16\n\x0e\x61udio_encoding\x18\x04 \x01(\t\x12\x1a\n\x12segment_start_time\x18\x05 \x01(\x02\x12\x18\n\x10segment_duration\x18\x06 \x01(\x02\x12\x12\n\nsession_id\x18\x07 \x01(\t\x12\x0f\n\x07\x66\x61\x63\x65_id\x18\x08 \x01(\t\x12\x12\n\nimage_data\x18\t \x01(\x0c\x12\x13\n\x0bimage_width\x18\n \x01(\x05\x12\x14\n\x0cimage_height\x18\x0b \x01(\x05\x12\x17\n\x0fvideo_timestamp\x18\x0c \x01(\x02\"\xd9\x01\n\rSpeakerResult\x12\x12\n\nspeaker_id\x18\x01 \x01(\t\x12\x12\n\nconfidence\x18\x02 \x01(\x02\x12\x1a\n\x12segment_start_time\x18\x03 \x01(\x02\x12\x18\n\x10segment_duration\x18\x04 \x01(\x02\x12\x16\n\x0eis_new_speaker\x18\x05 \x01(\x08\x12\x12\n\nsession_id\x18\x06 \x01(\t\x12\x15\n\ris_correction\x18\x07 \x01(\x08\x12\x0e\n\x06status\x18\x08 \x01(\t\x12\x17\n\x0fvideo_timestamp\x18\t \x01(\x02\x32I\n\x10SecondaryChannel\x12\x35\n\x17Secondary_media_manager\x12\x0e.SecondaryData\x1a\n.TextChunk2\xea\x01\n\x0cMediaService\x12\x31\n\x0fProcessAudioImg\x12\x10.AudioImgRequest\x1a\n.TextChunk0\x01\x12=\n\x0cStreamImages\x12\x13.ImageStreamRequest\x1a\x16.google.protobuf.Empty(\x01\x12\x33\n\x07GetBbox\x12\x16.google.protobuf.Empty\x1a\x10.FaceBoundingBox\x12\x33\n\nClearQueue\x12\x16.google.protobuf.Empty\x1a\r.QueueRemoval2Z\n\x19SpeakerRecognitionService\x12=\n\x11RecognizeSpeakers\x12\x14.SpeakerAudioSegment\x1a\x0e.SpeakerResult(\x01\x30\x01\x62\x06proto3'
+  serialized_pb=b'\n\ngrpc.proto\x1a\x1bgoogle/protobuf/empty.proto\"\x88\x02\n\x0f\x41udioImgRequest\x12\x12\n\naudio_data\x18\x01 \x01(\x0c\x12\x13\n\x0bsample_rate\x18\x02 \x01(\x05\x12\x14\n\x0cnum_channels\x18\x03 \x01(\x05\x12\x16\n\x0e\x61udio_encoding\x18\x04 \x01(\t\x12\x19\n\x11\x61udio_description\x18\x05 \x01(\t\x12\x12\n\nimage_data\x18\x06 \x01(\x0c\x12\x14\n\x0cimage_format\x18\x07 \x01(\t\x12\x13\n\x0bimage_width\x18\x08 \x01(\x05\x12\x14\n\x0cimage_height\x18\t \x01(\x05\x12\x10\n\x08\x61pi_task\x18\n \x01(\t\x12\x1c\n\x14skip_face_validation\x18\x0b \x01(\x08\"3\n\x10\x41udioImgResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"9\n\tTextChunk\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\x10\n\x08is_final\x18\x02 \x01(\x08\x12\x0c\n\x04mode\x18\x03 \x01(\t\"\x1f\n\x0cQueueRemoval\x12\x0f\n\x07removed\x18\x01 \x01(\x08\"\x84\x01\n\x12ImageStreamRequest\x12\x12\n\nimage_data\x18\x01 \x01(\x0c\x12\x14\n\x0cimage_format\x18\x02 \x01(\t\x12\x13\n\x0bimage_width\x18\x03 \x01(\x05\x12\x14\n\x0cimage_height\x18\x04 \x01(\x05\x12\x19\n\x11image_description\x18\x05 \x01(\t\"A\n\x0f\x46\x61\x63\x65\x42oundingBox\x12\n\n\x02x1\x18\x01 \x01(\x05\x12\n\n\x02y1\x18\x02 \x01(\x05\x12\n\n\x02x2\x18\x03 \x01(\x05\x12\n\n\x02y2\x18\x04 \x01(\x05\"m\n\rSecondaryData\x12\x10\n\x08\x61pi_task\x18\x01 \x01(\t\x12\x1a\n\x05image\x18\x02 \x01(\x0b\x32\x06.ImageH\x00\x88\x01\x01\x12\x1a\n\x05\x61udio\x18\x03 \x01(\x0b\x32\x06.AudioH\x01\x88\x01\x01\x42\x08\n\x06_imageB\x08\n\x06_audio\"\x1b\n\x05Image\x12\x12\n\nimage_data\x18\x01 \x01(\x0c\"^\n\x05\x41udio\x12\x12\n\naudio_data\x18\x01 \x01(\x0c\x12\x13\n\x0bsample_rate\x18\x02 \x01(\x05\x12\x14\n\x0cnum_channels\x18\x03 \x01(\x05\x12\x16\n\x0e\x61udio_encoding\x18\x04 \x01(\t\"P\n\x10VideoUploadChunk\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\x10\n\x08\x66ilename\x18\x02 \x01(\t\x12\x1c\n\x14max_duration_seconds\x18\x03 \x01(\x02\"W\n\x12VideoDownloadChunk\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\x10\n\x08\x66ilename\x18\x02 \x01(\t\x12\x0f\n\x07is_last\x18\x03 \x01(\x08\x12\x10\n\x08progress\x18\x04 \x01(\t\"\x9f\x02\n\x13SpeakerAudioSegment\x12\x12\n\naudio_data\x18\x01 \x01(\x0c\x12\x13\n\x0bsample_rate\x18\x02 \x01(\x05\x12\x14\n\x0cnum_channels\x18\x03 \x01(\x05\x12\x16\n\x0e\x61udio_encoding\x18\x04 \x01(\t\x12\x1a\n\x12segment_start_time\x18\x05 \x01(\x02\x12\x18\n\x10segment_duration\x18\x06 \x01(\x02\x12\x12\n\nsession_id\x18\x07 \x01(\t\x12\x0f\n\x07\x66\x61\x63\x65_id\x18\x08 \x01(\t\x12\x12\n\nimage_data\x18\t \x01(\x0c\x12\x13\n\x0bimage_width\x18\n \x01(\x05\x12\x14\n\x0cimage_height\x18\x0b \x01(\x05\x12\x17\n\x0fvideo_timestamp\x18\x0c \x01(\x02\"\xd9\x01\n\rSpeakerResult\x12\x12\n\nspeaker_id\x18\x01 \x01(\t\x12\x12\n\nconfidence\x18\x02 \x01(\x02\x12\x1a\n\x12segment_start_time\x18\x03 \x01(\x02\x12\x18\n\x10segment_duration\x18\x04 \x01(\x02\x12\x16\n\x0eis_new_speaker\x18\x05 \x01(\x08\x12\x12\n\nsession_id\x18\x06 \x01(\t\x12\x15\n\ris_correction\x18\x07 \x01(\x08\x12\x0e\n\x06status\x18\x08 \x01(\t\x12\x17\n\x0fvideo_timestamp\x18\t \x01(\x02\x32I\n\x10SecondaryChannel\x12\x35\n\x17Secondary_media_manager\x12\x0e.SecondaryData\x1a\n.TextChunk2\xea\x01\n\x0cMediaService\x12\x31\n\x0fProcessAudioImg\x12\x10.AudioImgRequest\x1a\n.TextChunk0\x01\x12=\n\x0cStreamImages\x12\x13.ImageStreamRequest\x1a\x16.google.protobuf.Empty(\x01\x12\x33\n\x07GetBbox\x12\x16.google.protobuf.Empty\x1a\x10.FaceBoundingBox\x12\x33\n\nClearQueue\x12\x16.google.protobuf.Empty\x1a\r.QueueRemoval2\x96\x01\n\x19SpeakerRecognitionService\x12=\n\x11RecognizeSpeakers\x12\x14.SpeakerAudioSegment\x1a\x0e.SpeakerResult(\x01\x30\x01\x12:\n\x0cProcessVideo\x12\x11.VideoUploadChunk\x1a\x13.VideoDownloadChunk(\x01\x30\x01\x62\x06proto3'
   ,
   dependencies=[google_dot_protobuf_dot_empty__pb2.DESCRIPTOR,])
 
@@ -500,6 +500,105 @@ _AUDIO = _descriptor.Descriptor(
 )
 
 
+_VIDEOUPLOADCHUNK = _descriptor.Descriptor(
+  name='VideoUploadChunk',
+  full_name='VideoUploadChunk',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  create_key=_descriptor._internal_create_key,
+  fields=[
+    _descriptor.FieldDescriptor(
+      name='data', full_name='VideoUploadChunk.data', index=0,
+      number=1, type=12, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"",
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+    _descriptor.FieldDescriptor(
+      name='filename', full_name='VideoUploadChunk.filename', index=1,
+      number=2, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"".decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+    _descriptor.FieldDescriptor(
+      name='max_duration_seconds', full_name='VideoUploadChunk.max_duration_seconds', index=2,
+      number=3, type=2, cpp_type=6, label=1,
+      has_default_value=False, default_value=float(0),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  serialized_options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=893,
+  serialized_end=973,
+)
+
+
+_VIDEODOWNLOADCHUNK = _descriptor.Descriptor(
+  name='VideoDownloadChunk',
+  full_name='VideoDownloadChunk',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  create_key=_descriptor._internal_create_key,
+  fields=[
+    _descriptor.FieldDescriptor(
+      name='data', full_name='VideoDownloadChunk.data', index=0,
+      number=1, type=12, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"",
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+    _descriptor.FieldDescriptor(
+      name='filename', full_name='VideoDownloadChunk.filename', index=1,
+      number=2, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"".decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+    _descriptor.FieldDescriptor(
+      name='is_last', full_name='VideoDownloadChunk.is_last', index=2,
+      number=3, type=8, cpp_type=7, label=1,
+      has_default_value=False, default_value=False,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+    _descriptor.FieldDescriptor(
+      name='progress', full_name='VideoDownloadChunk.progress', index=3,
+      number=4, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=b"".decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  serialized_options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=975,
+  serialized_end=1062,
+)
+
+
 _SPEAKERAUDIOSEGMENT = _descriptor.Descriptor(
   name='SpeakerAudioSegment',
   full_name='SpeakerAudioSegment',
@@ -604,8 +703,8 @@ _SPEAKERAUDIOSEGMENT = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=894,
-  serialized_end=1181,
+  serialized_start=1065,
+  serialized_end=1352,
 )
 
 
@@ -692,8 +791,8 @@ _SPEAKERRESULT = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=1184,
-  serialized_end=1401,
+  serialized_start=1355,
+  serialized_end=1572,
 )
 
 _SECONDARYDATA.fields_by_name['image'].message_type = _IMAGE
@@ -713,6 +812,8 @@ DESCRIPTOR.message_types_by_name['FaceBoundingBox'] = _FACEBOUNDINGBOX
 DESCRIPTOR.message_types_by_name['SecondaryData'] = _SECONDARYDATA
 DESCRIPTOR.message_types_by_name['Image'] = _IMAGE
 DESCRIPTOR.message_types_by_name['Audio'] = _AUDIO
+DESCRIPTOR.message_types_by_name['VideoUploadChunk'] = _VIDEOUPLOADCHUNK
+DESCRIPTOR.message_types_by_name['VideoDownloadChunk'] = _VIDEODOWNLOADCHUNK
 DESCRIPTOR.message_types_by_name['SpeakerAudioSegment'] = _SPEAKERAUDIOSEGMENT
 DESCRIPTOR.message_types_by_name['SpeakerResult'] = _SPEAKERRESULT
 _sym_db.RegisterFileDescriptor(DESCRIPTOR)
@@ -780,6 +881,20 @@ Audio = _reflection.GeneratedProtocolMessageType('Audio', (_message.Message,), {
   })
 _sym_db.RegisterMessage(Audio)
 
+VideoUploadChunk = _reflection.GeneratedProtocolMessageType('VideoUploadChunk', (_message.Message,), {
+  'DESCRIPTOR' : _VIDEOUPLOADCHUNK,
+  '__module__' : 'grpc_pb2'
+  # @@protoc_insertion_point(class_scope:VideoUploadChunk)
+  })
+_sym_db.RegisterMessage(VideoUploadChunk)
+
+VideoDownloadChunk = _reflection.GeneratedProtocolMessageType('VideoDownloadChunk', (_message.Message,), {
+  'DESCRIPTOR' : _VIDEODOWNLOADCHUNK,
+  '__module__' : 'grpc_pb2'
+  # @@protoc_insertion_point(class_scope:VideoDownloadChunk)
+  })
+_sym_db.RegisterMessage(VideoDownloadChunk)
+
 SpeakerAudioSegment = _reflection.GeneratedProtocolMessageType('SpeakerAudioSegment', (_message.Message,), {
   'DESCRIPTOR' : _SPEAKERAUDIOSEGMENT,
   '__module__' : 'grpc_pb2'
@@ -803,8 +918,8 @@ _SECONDARYCHANNEL = _descriptor.ServiceDescriptor(
   index=0,
   serialized_options=None,
   create_key=_descriptor._internal_create_key,
-  serialized_start=1403,
-  serialized_end=1476,
+  serialized_start=1574,
+  serialized_end=1647,
   methods=[
   _descriptor.MethodDescriptor(
     name='Secondary_media_manager',
@@ -829,8 +944,8 @@ _MEDIASERVICE = _descriptor.ServiceDescriptor(
   index=1,
   serialized_options=None,
   create_key=_descriptor._internal_create_key,
-  serialized_start=1479,
-  serialized_end=1713,
+  serialized_start=1650,
+  serialized_end=1884,
   methods=[
   _descriptor.MethodDescriptor(
     name='ProcessAudioImg',
@@ -885,8 +1000,8 @@ _SPEAKERRECOGNITIONSERVICE = _descriptor.ServiceDescriptor(
   index=2,
   serialized_options=None,
   create_key=_descriptor._internal_create_key,
-  serialized_start=1715,
-  serialized_end=1805,
+  serialized_start=1887,
+  serialized_end=2037,
   methods=[
   _descriptor.MethodDescriptor(
     name='RecognizeSpeakers',
@@ -895,6 +1010,16 @@ _SPEAKERRECOGNITIONSERVICE = _descriptor.ServiceDescriptor(
     containing_service=None,
     input_type=_SPEAKERAUDIOSEGMENT,
     output_type=_SPEAKERRESULT,
+    serialized_options=None,
+    create_key=_descriptor._internal_create_key,
+  ),
+  _descriptor.MethodDescriptor(
+    name='ProcessVideo',
+    full_name='SpeakerRecognitionService.ProcessVideo',
+    index=1,
+    containing_service=None,
+    input_type=_VIDEOUPLOADCHUNK,
+    output_type=_VIDEODOWNLOADCHUNK,
     serialized_options=None,
     create_key=_descriptor._internal_create_key,
   ),

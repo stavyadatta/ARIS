@@ -98,6 +98,22 @@ service SpeakerRecognitionService {
     // Bidirectional streaming: client sends VAD audio segments,
     // server returns speaker identification results
     rpc RecognizeSpeakers(stream SpeakerAudioSegment) returns (stream SpeakerResult);
+
+    // Batch video processing: client uploads video, server annotates and sends back
+    rpc ProcessVideo(stream VideoUploadChunk) returns (stream VideoDownloadChunk);
+}
+
+message VideoUploadChunk {
+    bytes data = 1;                // Raw video file bytes (chunked)
+    string filename = 2;          // Original filename (sent in first chunk only)
+    float max_duration_seconds = 3; // Only process first N seconds (0 = all, sent in first chunk)
+}
+
+message VideoDownloadChunk {
+    bytes data = 1;                // Annotated video file bytes (chunked)
+    string filename = 2;          // Output filename (sent in first chunk only)
+    bool is_last = 3;             // True for the final chunk
+    string progress = 4;          // Progress updates (e.g., "Processing frame 120/3600")
 }
 
 message SpeakerAudioSegment {

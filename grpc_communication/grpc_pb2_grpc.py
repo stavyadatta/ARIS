@@ -248,6 +248,11 @@ class SpeakerRecognitionServiceStub(object):
                 request_serializer=grpc__pb2.SpeakerAudioSegment.SerializeToString,
                 response_deserializer=grpc__pb2.SpeakerResult.FromString,
                 )
+        self.ProcessVideo = channel.stream_stream(
+                '/SpeakerRecognitionService/ProcessVideo',
+                request_serializer=grpc__pb2.VideoUploadChunk.SerializeToString,
+                response_deserializer=grpc__pb2.VideoDownloadChunk.FromString,
+                )
 
 
 class SpeakerRecognitionServiceServicer(object):
@@ -263,6 +268,13 @@ class SpeakerRecognitionServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ProcessVideo(self, request_iterator, context):
+        """Batch video processing: client uploads video, server annotates and sends back
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_SpeakerRecognitionServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -270,6 +282,11 @@ def add_SpeakerRecognitionServiceServicer_to_server(servicer, server):
                     servicer.RecognizeSpeakers,
                     request_deserializer=grpc__pb2.SpeakerAudioSegment.FromString,
                     response_serializer=grpc__pb2.SpeakerResult.SerializeToString,
+            ),
+            'ProcessVideo': grpc.stream_stream_rpc_method_handler(
+                    servicer.ProcessVideo,
+                    request_deserializer=grpc__pb2.VideoUploadChunk.FromString,
+                    response_serializer=grpc__pb2.VideoDownloadChunk.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -297,5 +314,22 @@ class SpeakerRecognitionService(object):
         return grpc.experimental.stream_stream(request_iterator, target, '/SpeakerRecognitionService/RecognizeSpeakers',
             grpc__pb2.SpeakerAudioSegment.SerializeToString,
             grpc__pb2.SpeakerResult.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+    @staticmethod
+    def ProcessVideo(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(request_iterator, target, '/SpeakerRecognitionService/ProcessVideo',
+            grpc__pb2.VideoUploadChunk.SerializeToString,
+            grpc__pb2.VideoDownloadChunk.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)

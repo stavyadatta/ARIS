@@ -449,6 +449,106 @@ class SpeakerClient:
         self.is_active = False
         print(f"\n  {GREEN}Video processing finished.{RESET}\n")
 
+    def run_process_video(self, video_path, max_duration=0.0):
+        """
+        Batch video processing mode:
+        1. Upload video to server
+        2. Server runs face + speaker recognition, annotates frames
+        3. Download annotated video and save locally
+        """
+        if not os.path.exists(video_path):
+            logger.error(f"  {RED}!! Video not found: {video_path}{RESET}")
+            return
+
+        file_size = os.path.getsize(video_path) / (1024 * 1024)
+        filename = os.path.basename(video_path)
+
+        dur_text = f"{max_duration:.0f}s" if max_duration > 0 else "full"
+        print(f"""
+{CYAN}{BOLD}{'=' * 55}
+   BATCH VIDEO PROCESSING
+{'=' * 55}{RESET}
+
+{BOLD}  Input:{RESET}
+    File      {filename}  {DIM}({file_size:.1f}MB){RESET}
+    Duration  {dur_text}
+
+{BOLD}  Connection:{RESET}
+    Server    {self.server_address}
+
+{DIM}  Uploading video to server for processing...{RESET}
+{CYAN}{'=' * 55}{RESET}
+""")
+
+        # Upload video in chunks
+        CHUNK_SIZE = 1024 * 1024  # 1MB
+
+        def upload_chunks():
+            with open(video_path, 'rb') as f:
+                first = True
+                while True:
+                    data = f.read(CHUNK_SIZE)
+                    if not data:
+                        break
+                    yield grpc_pb2.VideoUploadChunk(
+                        data=data,
+                        filename=filename if first else "",
+                        max_duration_seconds=max_duration if first else 0.0
+                    )
+                    first = False
+
+        logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> UPLOAD{RESET}      {filename} ({file_size:.1f}MB)")
+
+        try:
+            responses = self.stub.ProcessVideo(upload_chunks())
+
+            output_file = None
+            output_buf = bytearray()
+
+            for chunk in responses:
+                # Progress updates
+                if chunk.progress and not chunk.data:
+                    logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}.. SERVER{RESET}      {chunk.progress}")
+                    continue
+
+                # First data chunk has the filename
+                if chunk.filename:
+                    output_file = chunk.filename
+                    logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}<< DOWNLOAD{RESET}    {output_file}")
+
+                if chunk.data:
+                    output_buf.extend(chunk.data)
+
+                if chunk.is_last:
+                    break
+
+            if output_buf and output_file:
+                # Save to same directory as input
+                output_dir = os.path.dirname(os.path.abspath(video_path))
+                output_path = os.path.join(output_dir, output_file)
+                with open(output_path, 'wb') as f:
+                    f.write(output_buf)
+
+                out_size = len(output_buf) / (1024 * 1024)
+                print(f"""
+{GREEN}{BOLD}{'=' * 55}
+   DONE
+{'=' * 55}{RESET}
+
+  Saved: {BOLD}{output_path}{RESET}
+  Size:  {out_size:.1f}MB
+
+{DIM}  Open the video to see annotated face + speaker labels.{RESET}
+{GREEN}{'=' * 55}{RESET}
+""")
+            else:
+                logger.error(f"  {RED}!! No output received from server{RESET}")
+
+        except grpc.RpcError as e:
+            logger.error(f"  {RED}!! gRPC error: {e.code()} - {e.details()}{RESET}")
+        except Exception as e:
+            logger.error(f"  {RED}!! Error: {e}{RESET}")
+
     def run_test_mode(self, use_camera=True):
         """
         Record from host mic + webcam.
@@ -533,6 +633,28 @@ class SpeakerClient:
         print(f"\n  {GREEN}Client finished.{RESET}\n")
 
 
+def _parse_duration(s):
+    """Parse duration string like '10m', '5m30s', '300' into seconds."""
+    import re
+    s = s.strip()
+    # Pure number = seconds
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    # Pattern: 10m, 5m30s, 1h10m, etc.
+    total = 0
+    for val, unit in re.findall(r'(\d+)\s*(h|m|s)', s):
+        val = int(val)
+        if unit == 'h':
+            total += val * 3600
+        elif unit == 'm':
+            total += val * 60
+        elif unit == 's':
+            total += val
+    return float(total) if total > 0 else float(s)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Standalone Face + Speaker Recognition Client (MacBook)",
@@ -545,8 +667,13 @@ Examples:
   Audio only (no webcam):
     python speaker_client.py --test-mode --no-camera --server 192.168.1.100:50051
 
-  Process a video file:
+  Stream video (real-time playback + recognition):
     python speaker_client.py --video /path/to/meeting.mp4 --server 192.168.1.100:50051
+
+  Batch process video (server annotates, sends back labeled video):
+    python speaker_client.py --process-video /path/to/meeting.mp4 --server 192.168.1.100:50051
+    python speaker_client.py --process-video /path/to/meeting.mp4 --duration 10m --server IP:50051
+    python speaker_client.py --process-video /path/to/meeting.mp4 --duration 300 --server IP:50051
         """
     )
     parser.add_argument("--server", type=str, default="localhost:50051",
@@ -556,18 +683,25 @@ Examples:
     parser.add_argument("--no-camera", action="store_true",
                         help="Disable webcam (audio only)")
     parser.add_argument("--video", type=str, default=None,
-                        help="Path to video file (extracts audio + frames)")
+                        help="Stream video file (real-time playback + recognition)")
+    parser.add_argument("--process-video", type=str, default=None,
+                        help="Batch process: upload video, server annotates, download result")
+    parser.add_argument("--duration", type=str, default=None,
+                        help="Max duration to process (e.g., '10m', '5m30s', '300')")
     args = parser.parse_args()
 
     client = SpeakerClient(server_address=args.server)
 
-    if args.video:
+    if args.process_video:
+        duration = _parse_duration(args.duration) if args.duration else 0.0
+        client.run_process_video(args.process_video, max_duration=duration)
+    elif args.video:
         client.run_video_mode(args.video)
     elif args.test_mode:
         client.run_test_mode(use_camera=not args.no_camera)
     else:
         parser.print_help()
-        print("\nRun with --test-mode or --video <path>")
+        print("\nRun with --test-mode, --video <path>, or --process-video <path>")
         sys.exit(1)
 
 
