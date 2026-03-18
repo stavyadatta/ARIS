@@ -22,23 +22,25 @@ _DIM = "\033[2m"
 _BOLD = "\033[1m"
 _RESET = "\033[0m"
 
-# Set up logger for speaker recognition
+# Set up logger for speaker recognition (prevent duplicate handlers)
 logger = logging.getLogger("speaker_recognition")
 logger.setLevel(logging.INFO)
+logger.propagate = False  # Don't bubble up to root logger (prevents double printing)
 
-# File handler — logs to ginny_server/logs/speaker_recognition.log
-_log_dir = Path(__file__).parent.parent.parent / "logs"
-_log_dir.mkdir(parents=True, exist_ok=True)
-_file_handler = logging.FileHandler(_log_dir / "speaker_recognition.log")
-_file_handler.setFormatter(logging.Formatter(
-    "%(asctime)s | %(levelname)-7s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-))
-logger.addHandler(_file_handler)
+if not logger.handlers:
+    # File handler — logs to ginny_server/logs/speaker_recognition.log
+    _log_dir = Path(__file__).parent.parent.parent / "logs"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _file_handler = logging.FileHandler(_log_dir / "speaker_recognition.log")
+    _file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s | %(levelname)-7s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    ))
+    logger.addHandler(_file_handler)
 
-# Stdout handler — clean colored output
-_stream_handler = logging.StreamHandler()
-_stream_handler.setFormatter(logging.Formatter("%(message)s"))
-logger.addHandler(_stream_handler)
+    # Stdout handler — clean colored output
+    _stream_handler = logging.StreamHandler()
+    _stream_handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(_stream_handler)
 
 
 def _log_event(icon, label, detail, color=_RESET):
@@ -62,7 +64,7 @@ class _SpeakerRecognition:
     def __init__(self,
                  model_id: str = "iic/speech_eres2netv2_sv_zh-cn_16k-common",
                  db_dir: str = "/workspace/database/voice_db",
-                 recognition_threshold: float = 0.6,
+                 recognition_threshold: float = 0.7,
                  device: str = "cuda:1"):
         self.device = device
         self.db_dir = Path(db_dir)
@@ -232,6 +234,163 @@ class _SpeakerRecognition:
         """Check if a voice embedding exists for this face_id."""
         return face_id in self.known_ids
 
+    def _generate_voice_id(self) -> str:
+        """Generate a new voice_N ID (sequential, like face_N)."""
+        current_ids = [int(x.replace("voice_", ""))
+                       for x in self.known_ids if x.startswith("voice_")]
+        next_id = (max(current_ids) + 1) if current_ids else 1
+        return f"voice_{next_id}"
+
+    # ===================== Multi-Sample Enrollment Buffer =====================
+
+    def init_enrollment_buffer(self):
+        """Initialize/reset the pending enrollment buffer."""
+        self._pending = {}  # key: pending_id → {"embeddings": [], "best_audio": bytes, "best_duration": float}
+        self._next_pending_id = 1
+        _log_event("--", "ENROLL BUF", "Enrollment buffer initialized", _DIM)
+
+    def match_or_buffer(self, embedding: np.ndarray, audio_data: bytes = None,
+                        sample_rate: int = 16000, min_samples: int = 3,
+                        pending_threshold: float = 0.5) -> dict:
+        """
+        Match embedding against voice_db. If no match, add to pending enrollment buffer.
+        When a pending entry reaches min_samples, average + enroll.
+
+        Returns:
+            {
+                "voice_id": str or None,   — matched or newly enrolled voice_id
+                "confidence": float,
+                "is_new": bool,            — True if just enrolled from buffer
+                "is_pending": bool,        — True if added to buffer (not yet enrolled)
+                "pending_id": str or None, — which pending entry this belongs to
+                "status": str
+            }
+        """
+        if not hasattr(self, '_pending'):
+            self.init_enrollment_buffer()
+
+        # Step 1: Match against voice_db
+        matched_id, confidence = self._match_voice(embedding)
+        if matched_id is not None:
+            return {
+                "voice_id": matched_id,
+                "confidence": confidence,
+                "is_new": False,
+                "is_pending": False,
+                "pending_id": None,
+                "status": f"recognized:{matched_id}"
+            }
+
+        # Step 2: Match against pending buffer entries
+        best_pending_id = None
+        best_pending_score = 0.0
+        emb_2d = embedding.reshape(1, -1)
+
+        for pid, entry in self._pending.items():
+            # Compare against average of existing embeddings in this entry
+            avg_emb = np.mean(entry["embeddings"], axis=0).reshape(1, -1)
+            score = float(cosine_similarity(emb_2d, avg_emb)[0, 0])
+            if score > best_pending_score:
+                best_pending_score = score
+                best_pending_id = pid
+
+        if best_pending_id and best_pending_score >= pending_threshold:
+            # Add to existing pending entry
+            entry = self._pending[best_pending_id]
+            entry["embeddings"].append(embedding)
+
+            # Track best (longest) audio for WAV save
+            if audio_data:
+                dur = len(audio_data) / (sample_rate * 2)
+                if dur > entry["best_duration"]:
+                    entry["best_audio"] = audio_data
+                    entry["best_duration"] = dur
+
+            _log_event("..", "PENDING",
+                       f"{_BOLD}{best_pending_id}{_RESET}  "
+                       f"{len(entry['embeddings'])}/{min_samples} samples  "
+                       f"match={best_pending_score:.2f}", _CYAN)
+
+            # Check if ready to enroll
+            if len(entry["embeddings"]) >= min_samples:
+                return self._flush_enrollment(best_pending_id, sample_rate)
+
+            return {
+                "voice_id": None,
+                "confidence": best_pending_score,
+                "is_new": False,
+                "is_pending": True,
+                "pending_id": best_pending_id,
+                "status": f"pending:{best_pending_id}:{len(entry['embeddings'])}/{min_samples}"
+            }
+
+        # Step 3: No match in DB or buffer — create new pending entry
+        pid = f"pending_{self._next_pending_id}"
+        self._next_pending_id += 1
+        dur = len(audio_data) / (sample_rate * 2) if audio_data else 0.0
+        self._pending[pid] = {
+            "embeddings": [embedding],
+            "best_audio": audio_data,
+            "best_duration": dur
+        }
+
+        _log_event("++", "NEW PENDING",
+                   f"{_BOLD}{pid}{_RESET}  1/{min_samples} samples  "
+                   f"(new voice detected)", _MAGENTA)
+
+        return {
+            "voice_id": None,
+            "confidence": 0.0,
+            "is_new": False,
+            "is_pending": True,
+            "pending_id": pid,
+            "status": f"pending:{pid}:1/{min_samples}"
+        }
+
+    def _flush_enrollment(self, pending_id: str, sample_rate: int = 16000) -> dict:
+        """Enroll a pending entry: average embeddings, L2 normalize, save to voice_db."""
+        entry = self._pending.pop(pending_id)
+        embeddings = np.array(entry["embeddings"])
+
+        # Average and L2 normalize
+        avg_embedding = np.mean(embeddings, axis=0)
+        avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)
+
+        # Generate voice_id and save
+        voice_id = self._generate_voice_id()
+        self._save_voice(voice_id, avg_embedding, entry["best_audio"], sample_rate)
+
+        _log_event("**", "ENROLLED",
+                   f"{_BOLD}{voice_id}{_RESET}  from {pending_id}  "
+                   f"({len(embeddings)} samples averaged)", _GREEN)
+
+        return {
+            "voice_id": voice_id,
+            "confidence": 0.0,
+            "is_new": True,
+            "is_pending": False,
+            "pending_id": None,
+            "status": f"enrolled:{voice_id}:from_{pending_id}"
+        }
+
+    def flush_all_pending(self, sample_rate: int = 16000, min_samples: int = 1):
+        """Force-enroll all pending entries (e.g., at end of video). Entries with
+        fewer than min_samples are discarded."""
+        if not hasattr(self, '_pending'):
+            return []
+
+        results = []
+        for pid in list(self._pending.keys()):
+            entry = self._pending[pid]
+            if len(entry["embeddings"]) >= min_samples:
+                result = self._flush_enrollment(pid, sample_rate)
+                results.append(result)
+            else:
+                _log_event("--", "DISCARD",
+                           f"{pid}  only {len(entry['embeddings'])} samples (need {min_samples})", _DIM)
+                del self._pending[pid]
+        return results
+
     def identify_speaker(self, audio_data: bytes, sample_rate: int = 16000,
                          current_face_id: str = None) -> dict:
         """
@@ -303,11 +462,14 @@ class _SpeakerRecognition:
                     "embedding": embedding
                 }
 
-        _log_event("??", "UNKNOWN", "no voice match, no face_id provided", _RED)
+        # No face_id provided, no voice match — auto-enroll with voice_N ID
+        new_voice_id = self._generate_voice_id()
+        self._save_voice(new_voice_id, embedding, audio_data, sample_rate)
+        _log_event("**", "ENROLLED", f"{_BOLD}{new_voice_id}{_RESET}  (new voice, no face)", _MAGENTA)
         return {
-            "face_id": None,
-            "confidence": confidence,
-            "is_new": False,
-            "status": "unknown:no_face_no_voice_match",
+            "face_id": new_voice_id,
+            "confidence": 0.0,
+            "is_new": True,
+            "status": f"enrolled:{new_voice_id}",
             "embedding": embedding
         }
