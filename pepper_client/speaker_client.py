@@ -709,13 +709,34 @@ class SpeakerClient:
 
         # Cleanup
         self.is_active = False
+        logger.info(f"  {DIM}{_ts()}{RESET}  {YELLOW}.. SHUTDOWN{RESET}     Stopping Pepper services...")
+
         try:
             audio_service.unsubscribe(module_name)
-            sound_loc.unsubscribe("SpeakerClient")
-            motion.rest()
+            logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}   Audio unsubscribed{RESET}")
         except Exception:
             pass
-        print(f"\n  {GREEN}Pepper mode finished.{RESET}\n")
+
+        try:
+            sound_loc.unsubscribe("SpeakerClient")
+            logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}   Sound localisation unsubscribed{RESET}")
+        except Exception:
+            pass
+
+        try:
+            posture = session.service("ALRobotPosture")
+            posture.goToPosture("Crouch", 0.5)
+            logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}   Robot crouching{RESET}")
+        except Exception:
+            pass
+
+        try:
+            motion.rest()
+            logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK SHUTDOWN{RESET}    Robot is asleep (stiffness off)")
+        except Exception as e:
+            logger.error(f"  {DIM}{_ts()}{RESET}  {RED}!! REST ERROR{RESET}  {e}")
+
+        print(f"\n  {GREEN}Pepper mode finished. Robot is resting.{RESET}\n")
 
     def run_test_mode(self, use_camera=True):
         """
