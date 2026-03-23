@@ -58,15 +58,26 @@ class SpeakerClient:
     Server runs face recognition + voice recognition and returns combined results.
     """
 
-    def __init__(self, server_address="localhost:50051"):
+    def __init__(self, server_address="localhost:50051",
+                 max_retries=5, connect_timeout=5.0,
+                 initial_backoff=1.0, max_backoff=30.0,
+                 stream_retry_backoff=2.0, max_stream_retries=10):
         self.server_address = server_address
         self.session_id = f"session_{uuid.uuid4().hex[:8]}"
         self.is_active = False
         self.sample_rate = 16000
         self._segments_to_send = queue.Queue()
+        self.max_retries = max_retries
+        self.connect_timeout = connect_timeout
+        self.initial_backoff = initial_backoff
+        self.max_backoff = max_backoff
+        self.stream_retry_backoff = stream_retry_backoff
+        self.max_stream_retries = max_stream_retries
+        self._shutdown_called = False
 
-        # gRPC
+        # gRPC — connect with retry
         self.channel = grpc.insecure_channel(server_address)
+        self._connect_with_retry()
         self.stub = grpc_pb2_grpc.SpeakerRecognitionServiceStub(self.channel)
 
         # Latest webcam frame (updated by camera thread)
@@ -77,6 +88,52 @@ class SpeakerClient:
         self._last_speaker = None  # track transitions for video mode
 
         logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}>> CLIENT{RESET}     server={server_address}  session={self.session_id}")
+
+    def _connect_with_retry(self):
+        """Wait for channel to be ready with exponential backoff."""
+        backoff = self.initial_backoff
+        for attempt in range(1 + self.max_retries):
+            try:
+                future = grpc.channel_ready_future(self.channel)
+                future.result(timeout=self.connect_timeout)
+                logger.info(
+                    f"  {DIM}{_ts()}{RESET}  {GREEN}CONNECTED{RESET}    "
+                    f"to {self.server_address} (attempt {attempt + 1})"
+                )
+                return
+            except grpc.FutureTimeoutError:
+                if attempt < self.max_retries:
+                    logger.warning(
+                        f"  {DIM}{_ts()}{RESET}  {YELLOW}RETRY{RESET}        "
+                        f"attempt {attempt + 1}/{self.max_retries}  "
+                        f"backoff={backoff:.1f}s"
+                    )
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, self.max_backoff)
+                else:
+                    logger.error(
+                        f"  {DIM}{_ts()}{RESET}  {RED}FAILED{RESET}       "
+                        f"could not connect to {self.server_address} "
+                        f"after {self.max_retries} retries"
+                    )
+                    raise ConnectionError(
+                        f"Could not connect to {self.server_address} "
+                        f"after {self.max_retries} retries"
+                    )
+
+    def shutdown(self):
+        """Gracefully shut down the client."""
+        if self._shutdown_called:
+            return
+        self._shutdown_called = True
+        self.is_active = False
+        # Drain the queue
+        while not self._segments_to_send.empty():
+            try:
+                self._segments_to_send.get_nowait()
+            except queue.Empty:
+                break
+        self.channel.close()
 
     def _generate_segments(self):
         """Generator yielding SpeakerAudioSegment for gRPC stream."""
