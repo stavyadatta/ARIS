@@ -262,9 +262,11 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
         current_face_id = None
         sample_rate = 16000
 
-        # Per-session audio buffer
+        # Per-session audio buffer (timeline-aware)
         audio_buffer = bytearray()
         buffer_start_time = 0.0  # absolute time of buffer start
+        buffer_end_time = 0.0    # expected end time of audio in buffer
+        first_segment_seen = False
         window_count = 0
 
         # Recording: collect frames + audio + results for post-session video
@@ -308,9 +310,68 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                 if current_face_id is None and request.face_id:
                     current_face_id = request.face_id
 
-                # === ACCUMULATE AUDIO (both for windowing and full recording) ===
+                # === QUICK MATCH: per-segment voice matching (immediate) ===
+                seg_duration = (len(audio_data) // 2) / sample_rate
+                if seg_duration >= 0.5:
+                    try:
+                        seg_embedding = self.speaker_recognition.extract_embedding(
+                            audio_data, sample_rate
+                        )
+                        matched_id, match_conf = self.speaker_recognition._match_voice(
+                            seg_embedding
+                        )
+                        seg_start = request.segment_start_time
+                        seg_end = seg_start + seg_duration
+
+                        if matched_id is not None:
+                            _log("~~", "QUICK MATCH",
+                                 f"{_BOLD}{matched_id}{_RESET}  conf={match_conf:.2f}  "
+                                 f"seg={seg_duration:.1f}s", _GREEN)
+                            yield pb2.SpeakerResult(
+                                speaker_id=matched_id,
+                                confidence=match_conf,
+                                segment_start_time=seg_start,
+                                segment_duration=seg_duration,
+                                is_new_speaker=False,
+                                session_id=session_id,
+                                is_correction=False,
+                                status=f"quick:{matched_id}",
+                                video_timestamp=video_ts
+                            )
+                            recorded_voice_results.append((
+                                seg_start, seg_end, matched_id, match_conf,
+                                f"quick:{matched_id}"
+                            ))
+                        else:
+                            _log("xx", "QUICK MISS",
+                                 f"best={match_conf:.2f}  seg={seg_duration:.1f}s  "
+                                 f"(will try diarization)", _YELLOW)
+                    except Exception as e:
+                        _log("!!", "QUICK ERR", str(e), _RED)
+
+                # === ACCUMULATE AUDIO (timeline-aware for diarization) ===
+                seg_start_t = request.segment_start_time
+                seg_dur_t = (len(audio_data) // 2) / sample_rate
+
+                if not first_segment_seen:
+                    # First segment: set buffer origin
+                    buffer_start_time = seg_start_t
+                    buffer_end_time = seg_start_t
+                    first_segment_seen = True
+
+                # Insert silence for gaps between segments (max 5s to avoid bloat)
+                gap = seg_start_t - buffer_end_time
+                if gap > 0.05:  # ignore tiny gaps (<50ms)
+                    silence_duration = min(gap, 5.0)
+                    silence_bytes = int(silence_duration * sample_rate * 2)
+                    audio_buffer.extend(b'\x00' * silence_bytes)
+                    if gap > 5.0:
+                        _log("..", "GAP CLAMP",
+                             f"gap={gap:.1f}s clamped to 5.0s silence", _DIM)
+
                 audio_buffer.extend(audio_data)
                 recorded_full_audio.extend(audio_data)
+                buffer_end_time = seg_start_t + seg_dur_t
                 buffer_duration = (len(audio_buffer) // 2) / sample_rate
 
                 # === WINDOW READY? Run diarization + ReID ===
