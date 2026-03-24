@@ -845,6 +845,9 @@ class SpeakerClient:
         audio_capture.start()
         logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK AUDIO{RESET}       Audio capture registered, listening on {listen_url}")
 
+        # Set active BEFORE starting SRP threads (they check is_active)
+        self.is_active = True
+
         # ---- SRP-PHAT: 4-channel audio capture + localization thread ----
         _srp_audio_capture = None
         if _srp_localizer is not None:
@@ -889,19 +892,28 @@ class SpeakerClient:
             # SRP localization thread — runs SRP-PHAT on queued audio buffers
             def _srp_localization_loop():
                 _srp_min_confidence = 1.5
+                _srp_count = [0]
                 while _client_ref.is_active:
                     try:
                         audio_chunk = _srp_audio_queue.get(timeout=0.2)
                         az, _, conf = _srp_localizer.locate(audio_chunk)
+                        _srp_count[0] += 1
                         if conf >= _srp_min_confidence:
                             _direction_samples.append((az, conf))
-                    except Exception:
-                        pass  # queue timeout or locate error
+                            if _srp_count[0] % 5 == 0:
+                                logger.info(
+                                    f"  {DIM}{_ts()}{RESET}  {MAGENTA}>> SRP-DOA{RESET}     "
+                                    f"az={az:.2f}rad ({az * 57.3:.0f}°)  "
+                                    f"conf={conf:.1f}"
+                                )
+                    except Exception as e:
+                        if not isinstance(e, __import__('queue').Empty):
+                            logger.error(
+                                f"  {DIM}{_ts()}{RESET}  {RED}!! SRP ERR{RESET}     {e}"
+                            )
 
             Thread(target=_srp_localization_loop, daemon=True).start()
             logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK SRP THREAD{RESET}  Localization thread running")
-
-        self.is_active = True
 
         # Start gRPC response handler
         Thread(target=self._handle_responses, daemon=True).start()
