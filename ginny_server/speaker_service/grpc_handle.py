@@ -377,6 +377,9 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                 # === WINDOW READY? Run diarization + ReID ===
                 if buffer_duration >= WINDOW_SIZE:
                     window_count += 1
+                    # Ensure even byte count (int16 = 2 bytes per sample)
+                    if len(audio_buffer) % 2 != 0:
+                        audio_buffer = audio_buffer[:-1]
                     window_audio = bytes(audio_buffer)
                     win_start = buffer_start_time
                     win_end = win_start + buffer_duration
