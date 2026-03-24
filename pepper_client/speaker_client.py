@@ -824,7 +824,7 @@ class SpeakerClient:
                                             f"{DIM}({len(_direction_samples)} samples){RESET}"
                                         )
                                         try:
-                                            motion.moveTo(0, 0, avg_az)
+                                            motion.moveTo(0, 0, float(avg_az))
                                             _last_move_time[0] = time.time()
                                         except Exception as e:
                                             logger.error(f"  {DIM}{_ts()}{RESET}  {RED}!! MOVE{RESET}  {e}")
