@@ -692,7 +692,7 @@ class SpeakerClient:
             from wake_word_localizer.srp_phat_localizer import SRPPHATLocalizer
             if localizer == "srp-phat":
                 _srp_localizer = SRPPHATLocalizer(
-                    sample_rate=48000, enable_msw=False, mic_acceptance_deg=180
+                    sample_rate=48000, enable_msw=False, mic_acceptance_deg=150
                 )
             else:  # srp-hsda
                 _srp_localizer = SRPPHATLocalizer(
@@ -889,28 +889,44 @@ class SpeakerClient:
             _srp_audio_capture.start()
             logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK SRP AUDIO{RESET}   4-channel capture at 48kHz")
 
-            # SRP localization thread — runs SRP-PHAT on queued audio buffers
+            # SRP localization thread — drain queue, process only latest buffer
             def _srp_localization_loop():
+                import queue as _queue_mod
                 _srp_min_confidence = 1.5
                 _srp_count = [0]
                 while _client_ref.is_active:
+                    # Drain queue, keep only the newest buffer (like sound_tracker.py)
+                    chunk = None
+                    skipped = 0
+                    while True:
+                        try:
+                            newest = _srp_audio_queue.get_nowait()
+                            if chunk is not None:
+                                skipped += 1
+                            chunk = newest
+                        except _queue_mod.Empty:
+                            break
+
+                    if chunk is None:
+                        time.sleep(0.01)
+                        continue
+
                     try:
-                        audio_chunk = _srp_audio_queue.get(timeout=0.2)
-                        az, _, conf = _srp_localizer.locate(audio_chunk)
+                        az, _, conf = _srp_localizer.locate(chunk)
                         _srp_count[0] += 1
                         if conf >= _srp_min_confidence:
-                            _direction_samples.append((az, conf))
+                            _direction_samples.append((float(az), float(conf)))
                             if _srp_count[0] % 5 == 0:
                                 logger.info(
                                     f"  {DIM}{_ts()}{RESET}  {MAGENTA}>> SRP-DOA{RESET}     "
                                     f"az={az:.2f}rad ({az * 57.3:.0f}°)  "
-                                    f"conf={conf:.1f}"
+                                    f"conf={conf:.1f}  "
+                                    f"{DIM}skip={skipped}{RESET}"
                                 )
                     except Exception as e:
-                        if not isinstance(e, __import__('queue').Empty):
-                            logger.error(
-                                f"  {DIM}{_ts()}{RESET}  {RED}!! SRP ERR{RESET}     {e}"
-                            )
+                        logger.error(
+                            f"  {DIM}{_ts()}{RESET}  {RED}!! SRP ERR{RESET}     {e}"
+                        )
 
             Thread(target=_srp_localization_loop, daemon=True).start()
             logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK SRP THREAD{RESET}  Localization thread running")
