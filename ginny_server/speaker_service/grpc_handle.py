@@ -247,7 +247,7 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
         Audio accumulates in a per-session buffer. When buffer reaches WINDOW_SIZE (30s):
         1. Run DiariZen on the buffer → speaker clusters
         2. Concat audio per cluster → ERes2NetV2 embedding
-        3. match_or_buffer against voice_db → voice_id or pending enrollment
+        3. match_or_buffer against voice DB → voice_id or pending enrollment
         4. Yield SpeakerResult for each cluster's segments
         5. Shift buffer forward (keep WINDOW_OVERLAP for continuity)
 

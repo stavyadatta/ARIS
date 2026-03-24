@@ -4,8 +4,8 @@ Batch video processor — sliding window diarization + multi-sample voice ReID.
 Pipeline (simulates real-time):
 1. Split audio into 30s windows with 10s overlap
 2. DiariZen clusters each window internally (wespeaker)
-3. Concat audio per cluster → ERes2NetV2 embedding
-4. Match against voice_db or enrollment buffer
+3. Concat audio per cluster → speaker embedding (model-dependent)
+4. Match against voice DB or enrollment buffer
 5. 3-sample enrollment: average embeddings before saving
 
 Face recognition runs independently on frames (decoupled).

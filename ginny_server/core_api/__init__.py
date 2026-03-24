@@ -12,6 +12,8 @@ from .trackers import OCSort
 from .speaker_recognition import _SpeakerRecognition
 from .diarization import _Diarization
 
+import os as _os
+
 FaceRecognition = _FaceRecognition()
 WhisperSpeech2Text = _WhisperSpeech2Text()
 Llama = _Llama()
@@ -23,7 +25,9 @@ Grok = _GrokHandler()
 RelationshipChecker = _RelationshipChecker()
 AttributeFinder = _AttributeFinder()
 ClipClassification = _ClipClassification()
-SpeakerRecognition = _SpeakerRecognition()
+SpeakerRecognition = _SpeakerRecognition(
+    model_name=_os.environ.get("SPEAKER_MODEL", "eres2netv2")
+)
 Diarization = _Diarization()
 
 __all__ = ["FaceRecognition",

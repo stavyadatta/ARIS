@@ -9,7 +9,6 @@ import threading
 from pathlib import Path
 from typing import Tuple, Optional, List
 
-from modelscope.models import Model
 from sklearn.metrics.pairwise import cosine_similarity
 
 # ANSI colors
@@ -50,39 +49,147 @@ def _log_event(icon, label, detail, color=_RESET):
     logger.info(f"  {_DIM}{ts}{_RESET}  {color}{icon} {label:<14}{_RESET} {detail}")
 
 
+# ===================== Model Registry =====================
+
+MODEL_REGISTRY = {
+    "eres2netv2": {
+        "display_name": "ERes2NetV2",
+        "model_id": "iic/speech_eres2netv2_sv_zh-cn_16k-common",
+        "db_dir": "/workspace/database/voice_eres2netv2",
+    },
+    "titanet": {
+        "display_name": "TitaNet Large",
+        "model_id": "nvidia/speakerverification_en_titanet_large",
+        "db_dir": "/workspace/database/voice_titanet",
+    },
+    "redimnet": {
+        "display_name": "ReDimNet B6",
+        "model_id": "B6",
+        "db_dir": "/workspace/database/voice_redimnet",
+    },
+}
+
+
 class _SpeakerRecognition:
     """
-    Speaker recognition using ERes2NetV2 (192-dim embeddings, 16kHz).
+    Speaker recognition with switchable models (192-dim embeddings, 16kHz).
 
-    Mirrors the _FaceRecognition pattern:
-    - Loads voice embeddings from /workspace/database/voice_db/*.npy at startup
-    - Matches via in-memory cosine similarity (sklearn)
-    - Saves new voice embeddings as face_N.npy (keyed by face_id)
-    - Thread-safe via Lock
+    Supported models (selected via model_name):
+    - eres2netv2: ERes2NetV2 from ModelScope (default)
+    - titanet: NVIDIA TitaNet Large from NeMo
+    - redimnet: ReDimNet B6 from IDRnD via torch.hub
+
+    Each model has its own embedding directory under /workspace/database/.
+    Matches via in-memory cosine similarity (sklearn).
+    Thread-safe via Lock.
     """
 
     def __init__(self,
-                 model_id: str = "iic/speech_eres2netv2_sv_zh-cn_16k-common",
-                 db_dir: str = "/workspace/database/voice_db",
+                 model_name: str = "eres2netv2",
                  recognition_threshold: float = 0.7,
                  device: str = "cuda:1"):
+        if model_name not in MODEL_REGISTRY:
+            raise ValueError(
+                f"Unknown model '{model_name}'. "
+                f"Choose from: {', '.join(MODEL_REGISTRY.keys())}"
+            )
+
+        self.model_name = model_name
         self.device = device
-        self.db_dir = Path(db_dir)
+        config = MODEL_REGISTRY[model_name]
+        self.db_dir = Path(config["db_dir"])
         self.recognition_threshold = recognition_threshold
         self._lock = threading.Lock()
+        self._display_name = config["display_name"]
 
-        # Ensure voice_db directory exists
+        # Ensure embedding directory exists
         self._ensure_db_directory()
 
-        # Load ERes2NetV2 model directly for embedding extraction
-        _log_event("...", "MODEL LOAD", f"ERes2NetV2 on {device}", _DIM)
-        self.model = Model.from_pretrained(model_id, device=device)
-        self.model.eval()
-        _log_event("OK", "MODEL READY", f"ERes2NetV2 on {device}", _GREEN)
+        # Load the selected model
+        _log_event("...", "MODEL LOAD", f"{self._display_name} on {device}", _DIM)
+        loader = getattr(self, f"_load_{model_name}")
+        loader(config["model_id"], device)
+        _log_event("OK", "MODEL READY", f"{self._display_name} on {device}", _GREEN)
 
         # Load existing voice embeddings from disk
         self.known_ids, self.known_embeddings = self._load_database()
-        _log_event("DB", "VOICE DB", f"{len(self.known_ids)} voices loaded from {self.db_dir}", _CYAN)
+        _log_event("DB", "VOICE DB",
+                   f"{len(self.known_ids)} voices loaded from {self.db_dir}  "
+                   f"[{self._display_name}]", _CYAN)
+
+    # ===================== Model Loaders =====================
+
+    def _load_eres2netv2(self, model_id: str, device: str):
+        """Load ERes2NetV2 via ModelScope."""
+        from modelscope.models import Model
+        self.model = Model.from_pretrained(model_id, device=device)
+        self.model.eval()
+
+    def _load_titanet(self, model_id: str, device: str):
+        """Load TitaNet Large via NVIDIA NeMo."""
+        try:
+            import nemo.collections.asr as nemo_asr
+        except ImportError:
+            raise ImportError(
+                "NeMo toolkit is required for TitaNet. "
+                "Install with: pip install nemo_toolkit[asr]"
+            )
+        self.model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_id)
+        self.model = self.model.to(device)
+        self.model.eval()
+
+    def _load_redimnet(self, model_id: str, device: str):
+        """Load ReDimNet B6 via torch.hub."""
+        self.model = torch.hub.load(
+            "IDRnD/ReDimNet", "ReDimNet",
+            model_name=model_id,
+            train_type="ft_lm",
+            dataset="vox2",
+        )
+        self.model = self.model.to(device)
+        self.model.eval()
+
+    # ===================== Embedding Extractors =====================
+
+    def _extract_eres2netv2(self, audio_np: np.ndarray) -> np.ndarray:
+        """Extract embedding using ERes2NetV2 (ModelScope)."""
+        audio_tensor = torch.from_numpy(audio_np).to(self.device)
+        with torch.no_grad():
+            embedding = self.model(audio_tensor)
+
+        if isinstance(embedding, dict):
+            embedding = embedding.get("spk_embedding", embedding.get("output", embedding))
+        if isinstance(embedding, torch.Tensor):
+            embedding = embedding.cpu().numpy()
+        return embedding.flatten()
+
+    def _extract_titanet(self, audio_np: np.ndarray) -> np.ndarray:
+        """Extract embedding using TitaNet Large (NeMo)."""
+        try:
+            # Preferred: direct numpy input (NeMo >= 1.23)
+            emb = self.model.infer_segment(audio_np)
+        except (AttributeError, TypeError):
+            # Fallback: write temp WAV for older NeMo versions
+            wav_path = self._float32_to_temp_wav(audio_np)
+            try:
+                emb = self.model.get_embedding(wav_path)
+            finally:
+                os.remove(wav_path)
+        # NeMo may return (embedding, logits) tuple
+        if isinstance(emb, tuple):
+            emb = emb[0]
+        if isinstance(emb, torch.Tensor):
+            emb = emb.cpu().numpy()
+        return emb.flatten()
+
+    def _extract_redimnet(self, audio_np: np.ndarray) -> np.ndarray:
+        """Extract embedding using ReDimNet B6 (torch.hub)."""
+        waveform = torch.from_numpy(audio_np).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            emb = self.model(waveform)
+        return emb.squeeze(0).cpu().float().numpy().flatten()
+
+    # ===================== Public API =====================
 
     def _ensure_db_directory(self):
         """Ensure that the voice database directory exists."""
@@ -93,7 +200,6 @@ class _SpeakerRecognition:
     def _load_database(self) -> Tuple[List[str], np.ndarray]:
         """
         Load known voice embeddings and IDs from the database directory.
-        Mirrors: face_recognition.py lines 160-182
 
         Returns:
             (list of face_ids, np.ndarray of embeddings stacked)
@@ -132,45 +238,48 @@ class _SpeakerRecognition:
                 os.remove(temp_file_path)
             raise
 
+    def _float32_to_temp_wav(self, audio_np: np.ndarray, sample_rate: int = 16000) -> str:
+        """Save float32 numpy array to a temporary WAV file. Returns path."""
+        import soundfile as sf
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        temp_file_path = temp_file.name
+        temp_file.close()
+        try:
+            sf.write(temp_file_path, audio_np.astype(np.float32), sample_rate)
+            return temp_file_path
+        except Exception:
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            raise
+
     def extract_embedding(self, audio_data: bytes, sample_rate: int = 16000) -> np.ndarray:
         """
         Extract 192-dim embedding from raw PCM_16 audio bytes.
+        Uses the active model selected at init time.
         Thread-safe via Lock.
 
         Returns:
             np.ndarray of shape (192,)
         """
         with self._lock:
-            # Convert PCM_16 bytes → float32 tensor (model expects tensor, not file path)
+            # Convert PCM_16 bytes → float32 numpy, normalized to [-1, 1]
             audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
-            audio_np = audio_np / 32768.0  # normalize to [-1, 1]
-            audio_tensor = torch.from_numpy(audio_np).to(self.device)
+            audio_np = audio_np / 32768.0
 
-            try:
-                with torch.no_grad():
-                    embedding = self.model(audio_tensor)
+            extractor = getattr(self, f"_extract_{self.model_name}")
+            embedding = extractor(audio_np)
 
-                if isinstance(embedding, dict):
-                    embedding = embedding.get("spk_embedding", embedding.get("output", embedding))
+            if embedding.shape[0] != 192:
+                raise ValueError(
+                    f"Expected 192-dim embedding, got {embedding.shape[0]}-dim "
+                    f"from {self._display_name}."
+                )
 
-                if isinstance(embedding, torch.Tensor):
-                    embedding = embedding.cpu().numpy()
-
-                embedding = embedding.flatten()
-
-                if embedding.shape[0] != 192:
-                    raise ValueError(
-                        f"Expected 192-dim embedding, got {embedding.shape[0]}-dim."
-                    )
-
-                return embedding
-            except Exception:
-                raise
+            return embedding
 
     def _match_voice(self, embedding: np.ndarray) -> Tuple[Optional[str], float]:
         """
         Match embedding against all known voice embeddings using cosine similarity.
-        Mirrors: face_recognition.py lines 230-254
 
         Returns:
             (face_id, score) if match >= threshold, else (None, best_score)
@@ -197,11 +306,10 @@ class _SpeakerRecognition:
                     audio_data: bytes = None, sample_rate: int = 16000):
         """
         Save a voice embedding to disk under the given face_id.
-        Mirrors: face_recognition.py lines 256-281
 
         Saves:
-            voice_db/face_N.npy  — the 192-dim embedding
-            voice_db/face_N.wav  — the source audio (optional)
+            {db_dir}/face_N.npy  — the 192-dim embedding
+            {db_dir}/face_N.wav  — the source audio (optional)
         """
         # Save embedding
         npy_path = self.db_dir / f"{face_id}.npy"
@@ -253,7 +361,7 @@ class _SpeakerRecognition:
                         sample_rate: int = 16000, min_samples: int = 3,
                         pending_threshold: float = 0.5) -> dict:
         """
-        Match embedding against voice_db. If no match, add to pending enrollment buffer.
+        Match embedding against voice DB. If no match, add to pending enrollment buffer.
         When a pending entry reaches min_samples, average + enroll.
 
         Returns:
@@ -269,7 +377,7 @@ class _SpeakerRecognition:
         if not hasattr(self, '_pending'):
             self.init_enrollment_buffer()
 
-        # Step 1: Match against voice_db
+        # Step 1: Match against voice DB
         matched_id, confidence = self._match_voice(embedding)
         if matched_id is not None:
             return {
@@ -348,7 +456,7 @@ class _SpeakerRecognition:
         }
 
     def _flush_enrollment(self, pending_id: str, sample_rate: int = 16000) -> dict:
-        """Enroll a pending entry: average embeddings, L2 normalize, save to voice_db."""
+        """Enroll a pending entry: average embeddings, L2 normalize, save."""
         entry = self._pending.pop(pending_id)
         embeddings = np.array(entry["embeddings"])
 

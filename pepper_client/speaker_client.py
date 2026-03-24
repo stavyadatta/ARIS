@@ -607,13 +607,16 @@ class SpeakerClient:
             logger.error(f"  {RED}!! Error: {e}{RESET}")
 
     def run_pepper_mode(self, robot_ip, robot_port=9559, movement_cooldown=5.0,
-                        listen_ip="192.168.0.50", listen_port=9559):
+                        listen_ip="192.168.0.50", listen_port=9559,
+                        localizer="naoqi"):
         """
         Run on Pepper robot with:
         - Audio from Pepper's mic (16kHz mono via ALAudioDevice + processRemote callback)
         - Camera from Pepper's top camera (1280x960 RGB via ALVideoDevice)
-        - Sound localisation via ALSoundLocalization → body rotation toward speaker
+        - Sound localisation → body rotation toward speaker
         - Speaker recognition via gRPC to server (audio + camera frames)
+
+        localizer: "naoqi" (ALSoundLocalization), "srp-phat", or "srp-hsda"
         """
         try:
             import qi
@@ -622,6 +625,13 @@ class SpeakerClient:
         except ImportError as e:
             logger.error(f"  {RED}!! Missing dependency: {e}. Need qi + opencv + Pillow.{RESET}")
             return
+
+        localizer_labels = {
+            "naoqi": "ALSoundLocalization (NAOqi)",
+            "srp-phat": "SRP-PHAT (4-mic, 48kHz)",
+            "srp-hsda": "SRP-PHAT-HSDA (4-mic, 48kHz)",
+        }
+        loc_label = localizer_labels.get(localizer, localizer)
 
         connection_url = f"tcp://{robot_ip}:{robot_port}"
         print(f"""
@@ -635,7 +645,7 @@ class SpeakerClient:
 {BOLD}  Pipeline:{RESET}
     Audio     Pepper mic (16kHz mono) → gRPC
     Camera    Pepper top cam (1280x960) → JPEG → gRPC
-    Localise  ALSoundLocalization → body rotation
+    Localise  {loc_label} → body rotation
     Recog     gRPC → {self.server_address}
 
 {DIM}  Connecting to Pepper...{RESET}
@@ -660,16 +670,35 @@ class SpeakerClient:
         life_service.setAutonomousAbilityEnabled("All", False)
         logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK LIFE{RESET}        Autonomous abilities disabled")
 
-        # Wake robot and stand normally
+        # Wake robot and stand upright
         motion.wakeUp()
-        posture.goToPosture("StandInit", 0.5)
-        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK MOTION{RESET}      Robot awake, standing normally")
+        posture.goToPosture("Stand", 0.5)
+        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK MOTION{RESET}      Robot awake, standing upright")
 
         # Enable sound localisation
-        sound_loc.subscribe("SpeakerClient")
-        sound_loc.setParameter("Sensitivity", 0.8)
-        audio_device.enableEnergyComputation()
-        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK AUDIO SVC{RESET}   ALSoundLocalization + ALAudioDevice ready")
+        _srp_localizer = None
+        _srp_audio_queue = None
+        if localizer == "naoqi":
+            sound_loc.subscribe("SpeakerClient")
+            sound_loc.setParameter("Sensitivity", 0.8)
+            audio_device.enableEnergyComputation()
+            logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK AUDIO SVC{RESET}   ALSoundLocalization ready")
+        else:
+            # SRP-PHAT or SRP-PHAT-HSDA
+            audio_device.enableEnergyComputation()
+            import queue as _q
+            _srp_audio_queue = _q.Queue(maxsize=10)
+
+            from wake_word_localizer.srp_phat_localizer import SRPPHATLocalizer
+            if localizer == "srp-phat":
+                _srp_localizer = SRPPHATLocalizer(
+                    sample_rate=48000, enable_msw=False, mic_acceptance_deg=180
+                )
+            else:  # srp-hsda
+                _srp_localizer = SRPPHATLocalizer(
+                    sample_rate=48000, enable_msw=True, mic_acceptance_deg=150
+                )
+            logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK AUDIO SVC{RESET}   {loc_label} ready")
 
         # Subscribe to camera (same settings as pepper.py: resolution=5, colorspace=11, fps=30)
         video_client = video_service.subscribeCamera(
@@ -724,15 +753,17 @@ class SpeakerClient:
 
                 # Poll localisation during speech
                 if _is_speech[0]:
-                    try:
-                        loc_data = memory.getData("ALSoundLocalization/SoundLocated")
-                        if loc_data and len(loc_data) >= 2:
-                            az = loc_data[1][0]
-                            conf = loc_data[1][2]
-                            if conf > 0.3:
-                                _direction_samples.append((az, conf))
-                    except Exception:
-                        pass
+                    if _srp_localizer is None:
+                        # NAOqi localisation
+                        try:
+                            loc_data = memory.getData("ALSoundLocalization/SoundLocated")
+                            if loc_data and len(loc_data) >= 2:
+                                az = loc_data[1][0]
+                                conf = loc_data[1][2]
+                                if conf > 0.3:
+                                    _direction_samples.append((az, conf))
+                        except Exception:
+                            pass
 
                 if current_energy > _energy_threshold:
                     _silence_count[0] = 0
@@ -814,6 +845,62 @@ class SpeakerClient:
         audio_capture.start()
         logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK AUDIO{RESET}       Audio capture registered, listening on {listen_url}")
 
+        # ---- SRP-PHAT: 4-channel audio capture + localization thread ----
+        _srp_audio_capture = None
+        if _srp_localizer is not None:
+            class SRPAudioCapture(object):
+                """qi service capturing 4-channel 48kHz audio for SRP-PHAT."""
+                def __init__(self):
+                    self.module_name = "SRPAudioCapture"
+
+                def init_service(self, sess):
+                    self.audio_service = sess.service("ALAudioDevice")
+
+                def start(self):
+                    self.audio_service.setClientPreferences(
+                        self.module_name, 48000, 0, 1  # 48kHz, all channels, deinterleaved
+                    )
+                    self.audio_service.subscribe(self.module_name)
+
+                def stop(self):
+                    try:
+                        self.audio_service.unsubscribe(self.module_name)
+                    except Exception:
+                        pass
+
+                def processRemote(self, nbOfChannels, nbOfSamplesByChannel, timeStamp, inputBuffer):
+                    if not _client_ref.is_active:
+                        return
+                    try:
+                        audio_np = np.frombuffer(inputBuffer, dtype=np.int16).astype(np.float32) / 32768.0
+                        # Deinterleaved: reshape to (n_samples, n_channels)
+                        audio_np = audio_np.reshape(nbOfChannels, nbOfSamplesByChannel).T
+                        if _srp_audio_queue is not None and not _srp_audio_queue.full():
+                            _srp_audio_queue.put_nowait(audio_np)
+                    except Exception:
+                        pass
+
+            _srp_audio_capture = SRPAudioCapture()
+            session.registerService("SRPAudioCapture", _srp_audio_capture)
+            _srp_audio_capture.init_service(session)
+            _srp_audio_capture.start()
+            logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK SRP AUDIO{RESET}   4-channel capture at 48kHz")
+
+            # SRP localization thread — runs SRP-PHAT on queued audio buffers
+            def _srp_localization_loop():
+                _srp_min_confidence = 1.5
+                while _client_ref.is_active:
+                    try:
+                        audio_chunk = _srp_audio_queue.get(timeout=0.2)
+                        az, _, conf = _srp_localizer.locate(audio_chunk)
+                        if conf >= _srp_min_confidence:
+                            _direction_samples.append((az, conf))
+                    except Exception:
+                        pass  # queue timeout or locate error
+
+            Thread(target=_srp_localization_loop, daemon=True).start()
+            logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK SRP THREAD{RESET}  Localization thread running")
+
         self.is_active = True
 
         # Start gRPC response handler
@@ -863,11 +950,19 @@ class SpeakerClient:
         except Exception:
             pass
 
-        try:
-            sound_loc.unsubscribe("SpeakerClient")
-            logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}   Sound localisation unsubscribed{RESET}")
-        except Exception:
-            pass
+        if _srp_audio_capture is not None:
+            try:
+                _srp_audio_capture.stop()
+                logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}   SRP audio unsubscribed{RESET}")
+            except Exception:
+                pass
+
+        if localizer == "naoqi":
+            try:
+                sound_loc.unsubscribe("SpeakerClient")
+                logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}   Sound localisation unsubscribed{RESET}")
+            except Exception:
+                pass
 
         try:
             video_service.unsubscribe(video_client)
@@ -1044,6 +1139,9 @@ Examples:
                         help="IP for qi session listener on Pi (default: 192.168.0.50)")
     parser.add_argument("--listen-port", type=int, default=9559,
                         help="Port for qi session listener on Pi (default: 9559)")
+    parser.add_argument("--localizer", choices=["naoqi", "srp-phat", "srp-hsda"],
+                        default="naoqi",
+                        help="Sound localisation method (default: naoqi)")
     args = parser.parse_args()
 
     client = SpeakerClient(server_address=args.server)
@@ -1055,7 +1153,8 @@ Examples:
         client.run_video_mode(args.video)
     elif args.robot_ip:
         client.run_pepper_mode(args.robot_ip, args.robot_port,
-                               listen_ip=args.listen_ip, listen_port=args.listen_port)
+                               listen_ip=args.listen_ip, listen_port=args.listen_port,
+                               localizer=args.localizer)
     elif args.test_mode:
         client.run_test_mode(use_camera=not args.no_camera)
     else:
