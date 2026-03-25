@@ -630,6 +630,7 @@ class SpeakerClient:
             "naoqi": "ALSoundLocalization (NAOqi)",
             "srp-phat": "SRP-PHAT (4-mic, 48kHz)",
             "srp-hsda": "SRP-PHAT-HSDA (4-mic, 48kHz)",
+            "music": "MUSIC (4-mic, 48kHz)",
         }
         loc_label = localizer_labels.get(localizer, localizer)
 
@@ -684,17 +685,21 @@ class SpeakerClient:
             audio_device.enableEnergyComputation()
             logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK AUDIO SVC{RESET}   ALSoundLocalization ready")
         else:
-            # SRP-PHAT or SRP-PHAT-HSDA
+            # SRP-PHAT, SRP-PHAT-HSDA, or MUSIC
             audio_device.enableEnergyComputation()
             import queue as _q
             _srp_audio_queue = _q.Queue(maxsize=10)
 
-            from wake_word_localizer.srp_phat_localizer import SRPPHATLocalizer
-            if localizer == "srp-phat":
+            if localizer == "music":
+                from wake_word_localizer.music_localizer import MUSICLocalizer
+                _srp_localizer = MUSICLocalizer(sample_rate=48000)
+            elif localizer == "srp-phat":
+                from wake_word_localizer.srp_phat_localizer import SRPPHATLocalizer
                 _srp_localizer = SRPPHATLocalizer(
                     sample_rate=48000, enable_msw=False, mic_acceptance_deg=150
                 )
             else:  # srp-hsda
+                from wake_word_localizer.srp_phat_localizer import SRPPHATLocalizer
                 _srp_localizer = SRPPHATLocalizer(
                     sample_rate=48000, enable_msw=True, mic_acceptance_deg=150
                 )
@@ -1167,7 +1172,7 @@ Examples:
                         help="IP for qi session listener on Pi (default: 192.168.0.50)")
     parser.add_argument("--listen-port", type=int, default=9559,
                         help="Port for qi session listener on Pi (default: 9559)")
-    parser.add_argument("--localizer", choices=["naoqi", "srp-phat", "srp-hsda"],
+    parser.add_argument("--localizer", choices=["naoqi", "srp-phat", "srp-hsda", "music"],
                         default="naoqi",
                         help="Sound localisation method (default: naoqi)")
     args = parser.parse_args()
