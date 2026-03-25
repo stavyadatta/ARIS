@@ -608,15 +608,18 @@ class SpeakerClient:
 
     def run_pepper_mode(self, robot_ip, robot_port=9559, movement_cooldown=5.0,
                         listen_ip="192.168.0.50", listen_port=9559,
-                        localizer="naoqi"):
+                        localizer="naoqi", wake_words=None,
+                        vosk_model_path=None):
         """
         Run on Pepper robot with:
         - Audio from Pepper's mic (16kHz mono via ALAudioDevice + processRemote callback)
         - Camera from Pepper's top camera (1280x960 RGB via ALVideoDevice)
-        - Sound localisation → body rotation toward speaker
+        - Sound localisation → body rotation toward speaker (only on wake word)
         - Speaker recognition via gRPC to server (audio + camera frames)
 
-        localizer: "naoqi" (ALSoundLocalization), "srp-phat", or "srp-hsda"
+        localizer: "naoqi" (ALSoundLocalization), "srp-phat", "srp-hsda", or "music"
+        wake_words: set of wake word variants (default: ginny/jeanie/jenny/etc.)
+        vosk_model_path: path to Vosk model dir for wake word detection
         """
         try:
             import qi
@@ -728,6 +731,43 @@ class SpeakerClient:
         _max_silence = 20
         _min_segment = 2.0
         _client_ref = self  # reference for the callback
+        _wake_word_triggered = [False]  # movement only when wake word detected
+        _wake_word_time = [0.0]         # when wake word was last detected
+        _wake_word_window = 10.0        # allow movement for N seconds after wake word
+
+        # Wake word detection via Vosk (lightweight, runs on captured 16kHz audio)
+        _vosk_recognizer = None
+        _wake_detector = None
+        if wake_words is None:
+            wake_words = {
+                "ginny", "jeanie", "jenny", "genie", "jeannie", "jinny",
+                "ginnie", "genny", "jenna", "gina", "jimmy", "gimmy",
+            }
+        try:
+            from vosk import Model as VoskModel, KaldiRecognizer
+            from wake_word_localizer.wake_word_detector import WakeWordDetector
+            _model_path = vosk_model_path or os.path.join(
+                os.path.dirname(__file__), "wake_word_localizer", "model"
+            )
+            if os.path.isdir(_model_path):
+                _vosk_model = VoskModel(_model_path)
+                _vosk_recognizer = KaldiRecognizer(_vosk_model, 16000)
+                _vosk_recognizer.SetWords(True)
+                _wake_detector = WakeWordDetector(wake_words)
+                logger.info(
+                    f"  {DIM}{_ts()}{RESET}  {GREEN}OK WAKE WORD{RESET}   "
+                    f"Vosk loaded, words: {', '.join(sorted(wake_words)[:4])}..."
+                )
+            else:
+                logger.warning(
+                    f"  {DIM}{_ts()}{RESET}  {YELLOW}!! WAKE WORD{RESET}   "
+                    f"Vosk model not found at {_model_path} — movement on all speech"
+                )
+        except ImportError:
+            logger.warning(
+                f"  {DIM}{_ts()}{RESET}  {YELLOW}!! WAKE WORD{RESET}   "
+                f"Vosk not installed — movement on all speech (pip install vosk)"
+            )
 
         class PepperAudioCapture(object):
             """qi service that receives audio via processRemote and does VAD."""
@@ -788,6 +828,24 @@ class SpeakerClient:
                     with _audio_lock:
                         _audio_buffer.write(inputBuffer)
 
+                    # Wake word detection via Vosk (runs on every audio chunk)
+                    if _vosk_recognizer is not None:
+                        import json as _json
+                        is_final = _vosk_recognizer.AcceptWaveform(bytes(inputBuffer))
+                        if is_final:
+                            result = _json.loads(_vosk_recognizer.Result())
+                            text = result.get("text", "")
+                        else:
+                            partial = _json.loads(_vosk_recognizer.PartialResult())
+                            text = partial.get("partial", "")
+                        if text and _wake_detector and _wake_detector.check(text):
+                            _wake_word_triggered[0] = True
+                            _wake_word_time[0] = time.time()
+                            logger.info(
+                                f"  {DIM}{_ts()}{RESET}  {GREEN}** WAKE WORD{RESET}   "
+                                f"detected: '{text}'"
+                            )
+
                 else:
                     if _is_speech[0]:
                         # Still write during silence (capture trailing audio)
@@ -815,9 +873,15 @@ class SpeakerClient:
                                     audio_bytes, _speech_start[0], duration
                                 )
 
-                                # Body movement from averaged direction
+                                # Body movement — only when wake word was recently detected
                                 now = time.time()
-                                if _direction_samples and (now - _last_move_time[0]) > movement_cooldown:
+                                # Check if wake word gating is active
+                                _ww_active = (
+                                    _vosk_recognizer is None  # no Vosk = move always (fallback)
+                                    or _wake_word_triggered[0]
+                                    and (now - _wake_word_time[0]) < _wake_word_window
+                                )
+                                if _direction_samples and _ww_active and (now - _last_move_time[0]) > movement_cooldown:
                                     total_conf = sum(c for _, c in _direction_samples)
                                     if total_conf > 0:
                                         avg_az = sum(az * c for az, c in _direction_samples) / total_conf
@@ -831,8 +895,14 @@ class SpeakerClient:
                                         try:
                                             motion.moveTo(0, 0, float(avg_az))
                                             _last_move_time[0] = time.time()
+                                            _wake_word_triggered[0] = False  # reset after moving
                                         except Exception as e:
                                             logger.error(f"  {DIM}{_ts()}{RESET}  {RED}!! MOVE{RESET}  {e}")
+                                elif _direction_samples and not _ww_active:
+                                    logger.debug(
+                                        f"  {DIM}{_ts()}{RESET}  {DIM}-- NO WAKE{RESET}      "
+                                        f"skipping movement (no wake word)"
+                                    )
 
                                 _direction_samples.clear()
                             else:
@@ -1175,6 +1245,11 @@ Examples:
     parser.add_argument("--localizer", choices=["naoqi", "srp-phat", "srp-hsda", "music"],
                         default="naoqi",
                         help="Sound localisation method (default: naoqi)")
+    parser.add_argument("--wake-word", type=str, default=None,
+                        help="Comma-separated wake words for movement gating "
+                             "(default: ginny,jeanie,jenny,genie,jeannie,jinny,...)")
+    parser.add_argument("--vosk-model", type=str, default=None,
+                        help="Path to Vosk model directory for wake word detection")
     args = parser.parse_args()
 
     client = SpeakerClient(server_address=args.server)
@@ -1185,9 +1260,14 @@ Examples:
     elif args.video:
         client.run_video_mode(args.video)
     elif args.robot_ip:
+        _wake_words = None
+        if args.wake_word:
+            _wake_words = {w.strip().lower() for w in args.wake_word.split(",")}
         client.run_pepper_mode(args.robot_ip, args.robot_port,
                                listen_ip=args.listen_ip, listen_port=args.listen_port,
-                               localizer=args.localizer)
+                               localizer=args.localizer,
+                               wake_words=_wake_words,
+                               vosk_model_path=args.vosk_model)
     elif args.test_mode:
         client.run_test_mode(use_camera=not args.no_camera)
     else:
