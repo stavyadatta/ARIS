@@ -56,28 +56,38 @@ MODEL_REGISTRY = {
         "display_name": "ERes2NetV2",
         "model_id": "iic/speech_eres2netv2_sv_zh-cn_16k-common",
         "db_dir": "/workspace/database/voice_eres2netv2",
+        "emb_dim": 192,
     },
     "titanet": {
         "display_name": "TitaNet Large",
         "model_id": "nvidia/speakerverification_en_titanet_large",
         "db_dir": "/workspace/database/voice_titanet",
+        "emb_dim": 192,
     },
     "redimnet": {
         "display_name": "ReDimNet B6",
         "model_id": "B6",
         "db_dir": "/workspace/database/voice_redimnet",
+        "emb_dim": 192,
+    },
+    "wavlm_ssl": {
+        "display_name": "WavLM-MHFA (SSL-SV)",
+        "model_id": "wavlm_mhfa",
+        "db_dir": "/workspace/database/voice_wavlm_ssl",
+        "emb_dim": 256,
     },
 }
 
 
 class _SpeakerRecognition:
     """
-    Speaker recognition with switchable models (192-dim embeddings, 16kHz).
+    Speaker recognition with switchable models (16kHz input).
 
     Supported models (selected via model_name):
-    - eres2netv2: ERes2NetV2 from ModelScope (default)
-    - titanet: NVIDIA TitaNet Large from NeMo
-    - redimnet: ReDimNet B6 from IDRnD via torch.hub
+    - eres2netv2: ERes2NetV2 from ModelScope (192-dim)
+    - titanet: NVIDIA TitaNet Large from NeMo (192-dim)
+    - redimnet: ReDimNet B6 from IDRnD via torch.hub (192-dim)
+    - wavlm_ssl: WavLM-Base+ MHFA from theolepage/wavlm_ssl_sv (256-dim)
 
     Each model has its own embedding directory under /workspace/database/.
     Matches via in-memory cosine similarity (sklearn).
@@ -99,6 +109,7 @@ class _SpeakerRecognition:
         config = MODEL_REGISTRY[model_name]
         self.db_dir = Path(config["db_dir"])
         self.recognition_threshold = recognition_threshold
+        self.emb_dim = config["emb_dim"]
         self._lock = threading.Lock()
         self._display_name = config["display_name"]
 
@@ -149,6 +160,48 @@ class _SpeakerRecognition:
         self.model = self.model.to(device)
         self.model.eval()
 
+    def _load_wavlm_ssl(self, model_id: str, device: str):
+        """Load WavLM-Base+ MHFA speaker encoder from wavlm_ssl_sv."""
+        import sys as _sys
+        _model_dir = Path(__file__).parent.parent.parent / "models" / "wavlm_ssl_sv"
+        _sys.path.insert(0, str(_model_dir))
+
+        from Baseline.Spk_Encoder import MainModel
+
+        wavlm_pt = _model_dir / "WavLM-Base+.pt"
+        checkpoint_path = _model_dir / "model000000018.model"
+
+        if not wavlm_pt.exists():
+            raise FileNotFoundError(
+                f"WavLM-Base+ not found at {wavlm_pt}. "
+                f"Download from: https://github.com/microsoft/unilm/tree/master/wavlm"
+            )
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"Speaker model checkpoint not found at {checkpoint_path}. "
+                f"Download from: https://drive.google.com/drive/folders/"
+                f"1ygZPvdGwepWDDfIQp6aPRktt2QxLt6cE"
+            )
+
+        # Build model (loads WavLM-Base+ internally)
+        self.model = MainModel(
+            pretrained_model_path=str(wavlm_pt),
+            nOut=256,
+            weight_finetuning_reg=0.01,
+        )
+
+        # Load fine-tuned speaker verification weights
+        state_dict = torch.load(str(checkpoint_path), map_location="cpu")
+        # Handle wrapped model state dicts
+        cleaned = {}
+        for k, v in state_dict.items():
+            k = k.replace("module.", "").replace("__S__.", "")
+            cleaned[k] = v
+        self.model.load_state_dict(cleaned, strict=False)
+
+        self.model = self.model.to(device)
+        self.model.eval()
+
     # ===================== Embedding Extractors =====================
 
     def _extract_eres2netv2(self, audio_np: np.ndarray) -> np.ndarray:
@@ -188,6 +241,15 @@ class _SpeakerRecognition:
         with torch.no_grad():
             emb = self.model(waveform)
         return emb.squeeze(0).cpu().float().numpy().flatten()
+
+    def _extract_wavlm_ssl(self, audio_np: np.ndarray) -> np.ndarray:
+        """Extract 256-dim embedding using WavLM-Base+ MHFA."""
+        waveform = torch.from_numpy(audio_np).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            emb = self.model([waveform, "test"])
+        if isinstance(emb, torch.Tensor):
+            emb = emb.cpu().numpy()
+        return emb.flatten()
 
     # ===================== Public API =====================
 
@@ -269,9 +331,9 @@ class _SpeakerRecognition:
             extractor = getattr(self, f"_extract_{self.model_name}")
             embedding = extractor(audio_np)
 
-            if embedding.shape[0] != 192:
+            if embedding.shape[0] != self.emb_dim:
                 raise ValueError(
-                    f"Expected 192-dim embedding, got {embedding.shape[0]}-dim "
+                    f"Expected {self.emb_dim}-dim embedding, got {embedding.shape[0]}-dim "
                     f"from {self._display_name}."
                 )
 

@@ -58,6 +58,7 @@ MODEL_DISPLAY = {
     "eres2netv2": ("ERes2NetV2 (voxceleb)", "voice_eres2netv2"),
     "titanet":    ("TitaNet Large (NeMo)",  "voice_titanet"),
     "redimnet":   ("ReDimNet B6 (IDRnD)",   "voice_redimnet"),
+    "wavlm_ssl":  ("WavLM-MHFA (SSL-SV)",   "voice_wavlm_ssl"),
 }
 
 
@@ -110,7 +111,7 @@ def serve(port=50051, max_workers=10, model="eres2netv2"):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Speaker + Face Recognition Server")
-    parser.add_argument("--model", choices=["eres2netv2", "titanet", "redimnet"],
+    parser.add_argument("--model", choices=["eres2netv2", "titanet", "redimnet", "wavlm_ssl"],
                         default="eres2netv2",
                         help="Speaker verification model (default: eres2netv2)")
     parser.add_argument("--port", type=int, default=50051,
