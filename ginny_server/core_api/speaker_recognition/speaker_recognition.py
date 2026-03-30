@@ -413,9 +413,11 @@ class _SpeakerRecognition:
 
     # ===================== Multi-Sample Enrollment Buffer =====================
 
+    MIN_ENROLL_DURATION = 20.0  # seconds — minimum total speech before enrollment
+
     def init_enrollment_buffer(self):
         """Initialize/reset the pending enrollment buffer."""
-        self._pending = {}  # key: pending_id → {"embeddings": [], "best_audio": bytes, "best_duration": float}
+        self._pending = {}  # key: pending_id → {"embeddings": [], "best_audio": bytes, "best_duration": float, "total_duration": float}
         self._next_pending_id = 1
         _log_event("--", "ENROLL BUF", "Enrollment buffer initialized", _DIM)
 
@@ -469,20 +471,24 @@ class _SpeakerRecognition:
             entry = self._pending[best_pending_id]
             entry["embeddings"].append(embedding)
 
-            # Track best (longest) audio for WAV save
+            # Track best (longest) audio for WAV save + total duration
             if audio_data:
                 dur = len(audio_data) / (sample_rate * 2)
+                entry["total_duration"] += dur
                 if dur > entry["best_duration"]:
                     entry["best_audio"] = audio_data
                     entry["best_duration"] = dur
 
+            n_samples = len(entry['embeddings'])
+            total_dur = entry["total_duration"]
             _log_event("..", "PENDING",
                        f"{_BOLD}{best_pending_id}{_RESET}  "
-                       f"{len(entry['embeddings'])}/{min_samples} samples  "
+                       f"{n_samples}/{min_samples} samples  "
+                       f"{total_dur:.1f}/{self.MIN_ENROLL_DURATION:.0f}s  "
                        f"match={best_pending_score:.2f}", _CYAN)
 
-            # Check if ready to enroll
-            if len(entry["embeddings"]) >= min_samples:
+            # Check if ready to enroll (need both enough samples AND enough audio)
+            if n_samples >= min_samples and total_dur >= self.MIN_ENROLL_DURATION:
                 return self._flush_enrollment(best_pending_id, sample_rate)
 
             return {
@@ -491,7 +497,7 @@ class _SpeakerRecognition:
                 "is_new": False,
                 "is_pending": True,
                 "pending_id": best_pending_id,
-                "status": f"pending:{best_pending_id}:{len(entry['embeddings'])}/{min_samples}"
+                "status": f"pending:{best_pending_id}:{n_samples}/{min_samples}:{total_dur:.0f}/{self.MIN_ENROLL_DURATION:.0f}s"
             }
 
         # Step 3: No match in DB or buffer — create new pending entry
@@ -501,7 +507,8 @@ class _SpeakerRecognition:
         self._pending[pid] = {
             "embeddings": [embedding],
             "best_audio": audio_data,
-            "best_duration": dur
+            "best_duration": dur,
+            "total_duration": dur,
         }
 
         _log_event("++", "NEW PENDING",
@@ -545,19 +552,27 @@ class _SpeakerRecognition:
 
     def flush_all_pending(self, sample_rate: int = 16000, min_samples: int = 1):
         """Force-enroll all pending entries (e.g., at end of video). Entries with
-        fewer than min_samples are discarded."""
+        fewer than min_samples or less than MIN_ENROLL_DURATION total audio
+        are discarded."""
         if not hasattr(self, '_pending'):
             return []
 
         results = []
         for pid in list(self._pending.keys()):
             entry = self._pending[pid]
-            if len(entry["embeddings"]) >= min_samples:
+            n = len(entry["embeddings"])
+            total_dur = entry.get("total_duration", 0.0)
+            if n >= min_samples and total_dur >= self.MIN_ENROLL_DURATION:
                 result = self._flush_enrollment(pid, sample_rate)
                 results.append(result)
             else:
+                reason = []
+                if n < min_samples:
+                    reason.append(f"{n}/{min_samples} samples")
+                if total_dur < self.MIN_ENROLL_DURATION:
+                    reason.append(f"{total_dur:.1f}/{self.MIN_ENROLL_DURATION:.0f}s audio")
                 _log_event("--", "DISCARD",
-                           f"{pid}  only {len(entry['embeddings'])} samples (need {min_samples})", _DIM)
+                           f"{pid}  {', '.join(reason)}", _DIM)
                 del self._pending[pid]
         return results
 
