@@ -207,15 +207,15 @@ def create_app():
             </div>
 
           <div class="grid gap-4">
-            <!-- Speak -->
-            <button id="btn-speak"
+            <!-- Birthday -->
+            <button id="btn-birthday"
               class="relative pulse btn-press rounded-xl px-5 py-5 text-lg font-semibold shadow-lg ring-1 ring-white/10
-                     bg-gradient-to-br from-indigo-500 to-sky-500 hover:from-indigo-400 hover:to-sky-400
-                     focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-300 focus:ring-offset-transparent flex items-center justify-center gap-3">
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M12 18v3m0-3a6 6 0 0 0 6-6m-6 6a6 6 0 0 1-6-6m6-9v9m0 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6" />
+                     bg-gradient-to-br from-amber-500 to-pink-500 hover:from-amber-400 hover:to-pink-400
+                     focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-pink-300 focus:ring-offset-transparent flex items-center justify-center gap-3">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2c-.5 0-1 .5-1 1v2H9c-.6 0-1 .4-1 1v1H5c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V9c0-1.1-.9-2-2-2h-3V6c0-.6-.4-1-1-1h-2V3c0-.5-.5-1-1-1zm-5 9h10v8H7v-8z"/>
               </svg>
-              Speak First Source
+              Happy Birthday
             </button>
 
             <!-- Stop recording -->
@@ -388,13 +388,13 @@ def create_app():
           }
         }
 
-        document.getElementById('btn-speak').addEventListener('click', ()=>setFlag('first_source'));
+        document.getElementById('btn-birthday').addEventListener('click', ()=>setFlag('birthday'));
         document.getElementById('btn-stop').addEventListener('click', ()=>setFlag('stop_recording'));
         document.getElementById('btn-dance').addEventListener('click', ()=>setFlag('dance'));
         volBtn.addEventListener('click', cycleVolume);
 
         document.addEventListener('keydown', (e)=>{
-          if(e.key.toLowerCase()==='s') setFlag('first_source');
+          if(e.key.toLowerCase()==='b') setFlag('birthday');
           if(e.key.toLowerCase()==='x') setFlag('stop_recording');
           if(e.key.toLowerCase()==='d') setFlag('dance');
         });
@@ -456,7 +456,7 @@ def create_app():
     def flag_set():
         payload = request.get_json(silent=True) or {}
         kind = str(payload.get("kind", "")).strip().lower()
-        if kind in ["first_source", "stop_recording", "dance"]:
+        if kind in ["birthday", "stop_recording", "dance"]:
             CloudState.add_command(kind)
             return jsonify({"ok": True, "kind": kind})
         return jsonify({"error": "unknown flag kind"}), 400
@@ -501,13 +501,15 @@ def create_app():
     # ---------- Device Endpoints (Poll & Push) ----------
     @app.get("/api/poll_commands")
     def poll_commands():
-        # Device calls this to get pending commands
+        if not require_api_key():
+            return jsonify({"error": "Unauthorized"}), 401
         cmds = CloudState.get_pending_commands()
         return jsonify({"ok": True, "commands": cmds})
 
     @app.post("/api/telemetry")
     def push_telemetry():
-        # Device calls this to update state
+        if not require_api_key():
+            return jsonify({"error": "Unauthorized"}), 401
         payload = request.get_json(silent=True) or {}
         CloudState.update_telemetry(payload)
         return jsonify({"ok": True})

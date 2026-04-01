@@ -21,7 +21,7 @@ from grpc_communication.grpc_pb2_grpc import MediaServiceStub, SecondaryChannelS
 from pepper_api import CameraManager, AudioManager2, HeadManager, EyeLEDManager, \
     SpeechManager, CustomMovement, StandardMovement, BirthdayDance
 from utils import SpeechProcessor
-from button_frontend import run_button_server, Buttons_vals
+from button_frontend import run_button_server, Buttons_vals, run_bridge
 from pepper_auto import PepperAutoController
 
 class TextChunk:
@@ -330,10 +330,15 @@ if __name__ == "__main__":
     pepper_auto_thread.daemon = True
     pepper_auto_thread.start()
 
-    # Starting the front end control thread 
+    # Starting the front end control thread
     button_control_thread = Thread(target=run_button_server)
     button_control_thread.daemon = True
     button_control_thread.start()
+
+    # Starting the cloud bridge thread (syncs with fly.io)
+    cloud_bridge_thread = Thread(target=run_bridge)
+    cloud_bridge_thread.daemon = True
+    cloud_bridge_thread.start()
 
     try:
         # Main loop: send audio and video and process LLM responses

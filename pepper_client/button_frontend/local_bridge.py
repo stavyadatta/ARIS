@@ -1,45 +1,48 @@
 import time
 import requests
 import os
-import sys
+from pathlib import Path
 
-# Import shared classes from button.py
-# ensuring we can import from current directory
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from button import Buttons_vals, Mic_UI, Telemetry, Volume
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+from .button import Buttons_vals, Mic_UI, Telemetry, Volume
 
 # Set CLOUD_URL env var, or use default custom domain
 CLOUD_URL = os.getenv("CLOUD_URL", "https://ginny.stavyadatta.com").rstrip('/')
+API_KEY = os.getenv("FLAGS_API_KEY", "").strip()
+API_HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
 
 def poll_commands():
     try:
-        resp = requests.get(f"{CLOUD_URL}/api/poll_commands", timeout=1)
+        resp = requests.get(f"{CLOUD_URL}/api/poll_commands", headers=API_HEADERS, timeout=1)
         if resp.status_code == 200:
             data = resp.json()
             commands = data.get("commands", [])
             for cmd in commands:
                 kind = cmd.get("kind", "")
-                print(f"Received command: {kind}")
-                
-                if kind == "first_source":
-                    Buttons_vals.set_first_source()
+                print(f"[bridge] Received command: {kind}")
+
+                if kind == "birthday":
+                    Buttons_vals.set_birthday()
                 elif kind == "stop_recording":
                     Buttons_vals.set_stop_recording()
                 elif kind == "dance":
                     Buttons_vals.set_dance()
                 elif kind == "cycle_volume":
-                    # Cycle volume locally
                     new_vol = Volume.cycle()
-                    print(f"Cycled volume to: {new_vol}")
+                    print(f"[bridge] Cycled volume to: {new_vol}")
                 elif kind.startswith("set_mic_threshold:"):
                     try:
                         val = int(kind.split(":")[1])
                         Mic_UI.set_mic_threshold(val)
-                        print(f"Set mic threshold to: {val}")
+                        print(f"[bridge] Set mic threshold to: {val}")
                     except:
-                        print(f"Invalid threshold cmd: {kind}")
+                        print(f"[bridge] Invalid threshold cmd: {kind}")
+                else:
+                    print(f"[bridge] Unknown command: {kind}")
     except Exception as e:
-        print(f"Poll error: {e}")
+        print(f"[bridge] Poll error: {e}")
 
 def push_telemetry():
     try:
@@ -48,7 +51,7 @@ def push_telemetry():
             "volume": Volume.peek_volume(),
             "mic_threshold": Mic_UI.peek_mic_threshold()
         }
-        requests.post(f"{CLOUD_URL}/api/telemetry", json=payload, timeout=0.5)
+        requests.post(f"{CLOUD_URL}/api/telemetry", json=payload, headers=API_HEADERS, timeout=0.5)
     except Exception as e:
         # Don't spam logs on connection error
         pass
@@ -61,4 +64,5 @@ def run_bridge():
         time.sleep(0.1) # 100ms poll interval
 
 if __name__ == "__main__":
+    # For standalone testing: python -m button_frontend.local_bridge
     run_bridge()
