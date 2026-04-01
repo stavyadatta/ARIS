@@ -15,6 +15,7 @@ from grpc_communication.grpc_pb2_grpc import MediaServiceStub
 from utils import SpeechProcessor, is_zero_list, get_vh_axis
 
 from movement import CustomMovementManager
+from button_frontend import FaceArea_UI
 
 logging.basicConfig(filename="app.log", level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -37,7 +38,8 @@ class PepperManager():
                     image_format="JPEG",
                     image_width=width,
                     image_height=height,
-                    image_description="Captured pepper image"
+                    image_description="Captured pepper image",
+                    face_min_area=FaceArea_UI.peek_face_min_area()
                 )
 
                 # Send the image stream request

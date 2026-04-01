@@ -138,9 +138,6 @@ class MediaManager(MediaServiceServicer):
                 "description": request.audio_description,
                 "image_data": image
             }
-            if request.face_min_area > 0:
-                FaceRecognition.min_area = request.face_min_area
-
             pipeline_response = self._getting_response(
                 audio_img_item,
                 skip_face_validation=request.skip_face_validation
@@ -165,6 +162,9 @@ class MediaManager(MediaServiceServicer):
         """
         try:
             for request in request_iterator:
+                if request.face_min_area > 0:
+                    FaceRecognition.min_area = request.face_min_area
+
                 image = self._decode_image_from_bytes(request.image_data)
                 if image is not None:
                     # Add image to the Face and Clip queues

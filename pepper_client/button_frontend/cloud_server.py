@@ -22,7 +22,7 @@ class CloudState:
     _queue_lock = Lock()
 
     # Telemetry cache
-    _telemetry = {"front_energy": 0.0, "volume": 40, "mic_threshold": 370}
+    _telemetry = {"front_energy": 0.0, "volume": 40, "mic_threshold": 370, "face_min_area": 4500}
     _telemetry_lock = Lock()
 
     @classmethod
@@ -48,6 +48,8 @@ class CloudState:
                 cls._telemetry["volume"] = int(data["volume"])
             if "mic_threshold" in data:
                 cls._telemetry["mic_threshold"] = int(data["mic_threshold"])
+            if "face_min_area" in data:
+                cls._telemetry["face_min_area"] = int(data["face_min_area"])
 
     @classmethod
     def get_telemetry(cls):
@@ -300,6 +302,16 @@ def create_app():
             <p class="mt-2 text-xs text-slate-400">Min 12 • Max 8000 • Step 20</p>
           </div>
 
+          <!-- Face Min Area Slider -->
+          <div class="mt-4 p-4 rounded-xl ring-1 ring-white/10 bg-black/20">
+            <div class="flex items-center justify-between mb-3">
+              <label for="face-area-slider" class="text-sm uppercase tracking-wider text-slate-300">Face Min Area</label>
+              <span id="face-area-value" class="text-sm font-semibold text-sky-200">—</span>
+            </div>
+            <input id="face-area-slider" type="range" min="400" max="4500" step="500" value="4500"/>
+            <p class="mt-2 text-xs text-slate-400">Min 400 • Max 4500 • Step 500</p>
+          </div>
+
           <div id="status" class="mt-4 text-sm text-slate-300/90"></div>
         </main>
       </div>
@@ -316,6 +328,8 @@ def create_app():
         const toastText = document.getElementById('toast-text');
         const micSlider = document.getElementById('mic-slider');
         const micValue = document.getElementById('mic-value');
+        const faceAreaSlider = document.getElementById('face-area-slider');
+        const faceAreaValue = document.getElementById('face-area-value');
         const volBtn = document.getElementById('btn-volume');
         const volLabel = document.getElementById('vol-label');
 
@@ -454,6 +468,59 @@ def create_app():
           saveMic(snapped);
         });
 
+        // --- Face area helpers ---
+        function snapFaceArea(x, min=400, step=500){
+          const k = Math.round((x - min) / step);
+          return min + k * step;
+        }
+
+        async function loadFaceArea(){
+          try{
+            const res = await fetch('/api/face_min_area');
+            const data = await res.json();
+            if(res.ok && typeof data.value === 'number'){
+              faceAreaSlider.value = data.value;
+              faceAreaValue.textContent = data.value;
+            } else {
+              faceAreaValue.textContent = faceAreaSlider.value;
+            }
+          }catch{
+            faceAreaValue.textContent = faceAreaSlider.value;
+          }
+        }
+
+        async function saveFaceArea(val){
+          try{
+            const res = await fetch('/face_min_area/set', {
+              method: 'POST',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({ value: val })
+            });
+            const data = await res.json();
+            if(res.ok){
+              faceAreaValue.textContent = data.value;
+              showToast(`Face min area queued: ${data.value}`);
+            } else {
+              showToast(data.error || 'Error');
+            }
+          }catch{
+            showToast('Network error');
+          }
+        }
+
+        faceAreaSlider.addEventListener('input', (e)=>{
+          const snapped = snapFaceArea(parseInt(e.target.value,10));
+          if(snapped != e.target.value){
+            e.target.value = snapped;
+          }
+          faceAreaValue.textContent = e.target.value;
+        });
+        faceAreaSlider.addEventListener('change', (e)=>{
+          const snapped = snapFaceArea(parseInt(e.target.value,10));
+          e.target.value = snapped;
+          saveFaceArea(snapped);
+        });
+
         async function pollTelemetry(){
           try{
             const res = await fetch('/front_energy', { cache: 'no-store' });
@@ -483,6 +550,7 @@ def create_app():
         setInterval(pollTelemetry, 200); // Poll cloud cache every 200ms
         pollTelemetry();
         loadMic();
+        loadFaceArea();
       </script>
     </body>
     </html>
@@ -512,6 +580,21 @@ def create_app():
         except Exception:
             return jsonify({"error": "invalid value"}), 400
 
+    @app.post("/face_min_area/set")
+    def face_min_area_set():
+        payload = request.get_json(silent=True) or {}
+        try:
+            val = int(payload.get("value"))
+            CloudState.add_command(f"set_face_min_area:{val}")
+            return jsonify({"ok": True, "value": val})
+        except Exception:
+            return jsonify({"error": "invalid value"}), 400
+
+    @app.get("/api/face_min_area")
+    def api_face_min_area_get():
+        telemetry = CloudState.get_telemetry()
+        return jsonify({"ok": True, "value": telemetry["face_min_area"]})
+
     @app.post("/volume/cycle")
     def volume_cycle():
         CloudState.add_command("cycle_volume")
@@ -536,6 +619,7 @@ def create_app():
                 "value": telemetry["front_energy"],
                 "volume": telemetry["volume"],
                 "mic_threshold": telemetry["mic_threshold"],
+                "face_min_area": telemetry["face_min_area"],
             }
         )
 

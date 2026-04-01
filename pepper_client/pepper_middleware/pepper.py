@@ -123,7 +123,8 @@ class Pepper():
             image_format="JPEG",
             image_width=width,
             image_height=height,
-            image_description="Captured pepper image"
+            image_description="Captured pepper image",
+            face_min_area=FaceArea_UI.peek_face_min_area()
         )
 
         # Send the image stream request
@@ -314,8 +315,7 @@ class Pepper():
                 image_width=width,
                 image_height=height,
                 api_task="Captured Pepper",
-                skip_face_validation=stopped_via_button,
-                face_min_area=FaceArea_UI.peek_face_min_area()
+                skip_face_validation=stopped_via_button
             )
 
             # Send the request to the gRPC server

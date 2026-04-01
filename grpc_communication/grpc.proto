@@ -36,7 +36,6 @@ message AudioImgRequest {
     int32 image_height = 9;        // Image height in pixels
     string api_task = 10; // Optional description for the image
     bool skip_face_validation = 11; // When true, skip face area and side-face checks
-    int32 face_min_area = 12; // Minimum face bounding-box area for validation (0 = use server default)
 }
 
 // Response message for sending both image and audio data
@@ -64,6 +63,7 @@ message ImageStreamRequest {
     int32 image_width = 3;        // Image width in pixels
     int32 image_height = 4;       // Image height in pixels
     string image_description = 5; // Optional description for the image
+    int32 face_min_area = 6; // Minimum face bounding-box area for validation (0 = use server default)
 }
 
 // Message representing a bounding box with four integer coordinates
