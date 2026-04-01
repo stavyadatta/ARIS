@@ -125,6 +125,18 @@ class Mic_UI:
     def set_mic_threshold(cls, value: int) -> int:
         return cls._mic_threshold.set(value)
 
+class FaceArea_UI:
+    """Thread-safe runtime setting for face minimum area."""
+    _face_min_area = _IntSetting(initial=4500, min_v=400, max_v=4500, step=500)
+
+    @classmethod
+    def peek_face_min_area(cls) -> int:
+        return cls._face_min_area.get()
+
+    @classmethod
+    def set_face_min_area(cls, value: int) -> int:
+        return cls._face_min_area.set(value)
+
 class Telemetry:
     """Live telemetry pushed by other modules (e.g., audio)."""
     _front_mic_energy = _FloatVar(0.0)
@@ -315,6 +327,16 @@ def create_app():
             <p class="mt-2 text-xs text-slate-400">Min 12 • Max 8000 • Step 20</p>
           </div>
 
+          <!-- Face Min Area Slider -->
+          <div class="mt-4 p-4 rounded-xl ring-1 ring-white/10 bg-black/20">
+            <div class="flex items-center justify-between mb-3">
+              <label for="face-area-slider" class="text-sm uppercase tracking-wider text-slate-300">Face Min Area</label>
+              <span id="face-area-value" class="text-sm font-semibold text-sky-200">—</span>
+            </div>
+            <input id="face-area-slider" type="range" min="400" max="4500" step="500" value="4500"/>
+            <p class="mt-2 text-xs text-slate-400">Min 400 • Max 4500 • Step 500</p>
+          </div>
+
           <div id="status" class="mt-4 text-sm text-slate-300/90"></div>
         </main>
       </div>
@@ -331,6 +353,8 @@ def create_app():
         const toastText = document.getElementById('toast-text');
         const micSlider = document.getElementById('mic-slider');
         const micValue = document.getElementById('mic-value');
+        const faceAreaSlider = document.getElementById('face-area-slider');
+        const faceAreaValue = document.getElementById('face-area-value');
         const volBtn = document.getElementById('btn-volume');
         const volLabel = document.getElementById('vol-label');
 
@@ -470,6 +494,59 @@ def create_app():
           saveMic(snapped);
         });
 
+        // --- Face area helpers ---
+        function snapFaceArea(x, min=400, step=500){
+          const k = Math.round((x - min) / step);
+          return min + k * step;
+        }
+
+        async function loadFaceArea(){
+          try{
+            const res = await fetch('/api/face_min_area');
+            const data = await res.json();
+            if(res.ok && typeof data.value === 'number'){
+              faceAreaSlider.value = data.value;
+              faceAreaValue.textContent = data.value;
+            } else {
+              faceAreaValue.textContent = faceAreaSlider.value;
+            }
+          }catch{
+            faceAreaValue.textContent = faceAreaSlider.value;
+          }
+        }
+
+        async function saveFaceArea(val){
+          try{
+            const res = await fetch('/face_min_area/set', {
+              method: 'POST',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({ value: val })
+            });
+            const data = await res.json();
+            if(res.ok){
+              faceAreaValue.textContent = data.value;
+              showToast(`Face min area: ${data.value}`);
+            } else {
+              showToast(data.error || 'Error');
+            }
+          }catch{
+            showToast('Network error');
+          }
+        }
+
+        faceAreaSlider.addEventListener('input', (e)=>{
+          const snapped = snapFaceArea(parseInt(e.target.value,10));
+          if(snapped != e.target.value){
+            e.target.value = snapped;
+          }
+          faceAreaValue.textContent = e.target.value;
+        });
+        faceAreaSlider.addEventListener('change', (e)=>{
+          const snapped = snapFaceArea(parseInt(e.target.value,10));
+          e.target.value = snapped;
+          saveFaceArea(snapped);
+        });
+
         async function pollEnergy(){
           try{
             const res = await fetch('/front_energy', { cache: 'no-store' });
@@ -487,6 +564,7 @@ def create_app():
         setInterval(pollEnergy, 50);
         pollEnergy();
         loadMic();
+        loadFaceArea();
       </script>
     </body>
     </html>
@@ -544,6 +622,35 @@ def create_app():
         except Exception:
             return jsonify({"error": "invalid value"}), 400
         new_val = Mic_UI.set_mic_threshold(val)
+        return jsonify({"ok": True, "value": new_val})
+
+    # ---------- Face min area endpoints ----------
+    @app.post("/face_min_area/set")
+    def face_min_area_set():
+        payload = request.get_json(silent=True) or {}
+        try:
+            val = int(payload.get("value"))
+        except Exception:
+            return jsonify({"error": "invalid value"}), 400
+        new_val = FaceArea_UI.set_face_min_area(val)
+        return jsonify({"ok": True, "value": new_val})
+
+    @app.get("/api/face_min_area")
+    def api_face_min_area_get():
+        if not require_api_key():
+            return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"ok": True, "value": FaceArea_UI.peek_face_min_area()})
+
+    @app.post("/api/face_min_area")
+    def api_face_min_area_post():
+        if not require_api_key():
+            return jsonify({"error": "Unauthorized"}), 401
+        payload = request.get_json(silent=True) or {}
+        try:
+            val = int(payload.get("value"))
+        except Exception:
+            return jsonify({"error": "invalid value"}), 400
+        new_val = FaceArea_UI.set_face_min_area(val)
         return jsonify({"ok": True, "value": new_val})
 
     # ---------- Health + flag API ----------

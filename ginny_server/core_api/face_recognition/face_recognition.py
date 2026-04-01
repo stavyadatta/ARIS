@@ -52,6 +52,8 @@ class _FaceRecognition:
         self.model_points = self._get_3d_model_points()
         self.dist_coeffs = np.zeros((4, 1), dtype=np.float32)
 
+        self.min_area = 4500  # default; updated at runtime via gRPC
+
         self.face_img_queue = Queue(maxsize=15)
         self.face_id_queue = deque(maxlen=15)
         self.save_img_queue = deque(maxlen=15)
@@ -213,7 +215,7 @@ class _FaceRecognition:
                 is_side_face = self._is_side_face(face, cam_matrix)
 
                 # Check if Area is valid
-                if area < 4500:
+                if area < self.min_area:
                     reason = "Area too small, {}".format(area)
                     continue
 

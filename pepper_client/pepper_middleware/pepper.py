@@ -21,7 +21,7 @@ from grpc_communication.grpc_pb2_grpc import MediaServiceStub, SecondaryChannelS
 from pepper_api import CameraManager, AudioManager2, HeadManager, EyeLEDManager, \
     SpeechManager, CustomMovement, StandardMovement, BirthdayDance, HandManager
 from utils import SpeechProcessor
-from button_frontend import run_button_server, Buttons_vals, run_bridge
+from button_frontend import run_button_server, Buttons_vals, FaceArea_UI, run_bridge
 from pepper_auto import PepperAutoController
 
 class TextChunk:
@@ -314,7 +314,8 @@ class Pepper():
                 image_width=width,
                 image_height=height,
                 api_task="Captured Pepper",
-                skip_face_validation=stopped_via_button
+                skip_face_validation=stopped_via_button,
+                face_min_area=FaceArea_UI.peek_face_min_area()
             )
 
             # Send the request to the gRPC server

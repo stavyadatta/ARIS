@@ -6,7 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from .button import Buttons_vals, Mic_UI, Telemetry, Volume
+from .button import Buttons_vals, Mic_UI, FaceArea_UI, Telemetry, Volume
 
 # Set CLOUD_URL env var, or use default custom domain
 CLOUD_URL = os.getenv("CLOUD_URL", "https://ginny.stavyadatta.com").rstrip('/')
@@ -45,6 +45,13 @@ def poll_commands():
                         print(f"[bridge] Set mic threshold to: {val}")
                     except:
                         print(f"[bridge] Invalid threshold cmd: {kind}")
+                elif kind.startswith("set_face_min_area:"):
+                    try:
+                        val = int(kind.split(":")[1])
+                        FaceArea_UI.set_face_min_area(val)
+                        print(f"[bridge] Set face min area to: {val}")
+                    except:
+                        print(f"[bridge] Invalid face area cmd: {kind}")
                 else:
                     print(f"[bridge] Unknown command: {kind}")
     except Exception as e:
@@ -55,7 +62,8 @@ def push_telemetry():
         payload = {
             "front_energy": Telemetry.peek_front_mic_energy(),
             "volume": Volume.peek_volume(),
-            "mic_threshold": Mic_UI.peek_mic_threshold()
+            "mic_threshold": Mic_UI.peek_mic_threshold(),
+            "face_min_area": FaceArea_UI.peek_face_min_area()
         }
         requests.post(f"{CLOUD_URL}/api/telemetry", json=payload, headers=API_HEADERS, timeout=0.5)
     except Exception as e:

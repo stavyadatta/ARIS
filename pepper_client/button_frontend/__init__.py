@@ -1,2 +1,2 @@
-from .button import Buttons_vals, Mic_UI, run_button_server, Telemetry, Volume
+from .button import Buttons_vals, Mic_UI, FaceArea_UI, run_button_server, Telemetry, Volume
 from .local_bridge import run_bridge
