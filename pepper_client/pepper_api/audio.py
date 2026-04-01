@@ -63,6 +63,18 @@ class AudioManager2(object):
             self.process_completion()
             print("Exit via First Source Button")
 
+        elif Buttons_vals.peek_raise_hand():
+            self.process_completion()
+            print("Exiting via the Raise Hand button")
+
+        elif Buttons_vals.peek_ask_question():
+            self.process_completion()
+            print("Exiting via the Ask Question button")
+
+        elif Buttons_vals.peek_say_thanks():
+            self.process_completion()
+            print("Exiting via the Say Thanks button")
+
         elif current_energy > Mic_UI.peek_mic_threshold():
             # Reset the below-threshold counter when the energy crosses the threshold
             self.below_threshold_count = 0

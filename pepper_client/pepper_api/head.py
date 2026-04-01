@@ -26,7 +26,7 @@ class HeadManager:
         # Make the robot stand up straight.
         self.posture_service.goToPosture("StandInit", speed)
 
-    def rotate_head_abs(self, forward=0, left=0, speed=0.2):
+    def rotate_head_abs(self, forward=-0.40, left=0, speed=0.2):
         """ Rotates Pepper's head relative to absolute position
         Params:
             forward: float

@@ -70,6 +70,9 @@ class Buttons_vals:
     birthday = _Latch()
     stop_recording = _Latch()
     dance = _Latch()  # NEW
+    raise_hand = _Latch()
+    ask_question = _Latch()
+    say_thanks = _Latch()
 
     @classmethod
     def set_birthday(cls): cls.birthday.set(True)
@@ -77,6 +80,12 @@ class Buttons_vals:
     def set_stop_recording(cls): cls.stop_recording.set(True)
     @classmethod
     def set_dance(cls): cls.dance.set(True)  # NEW
+    @classmethod
+    def set_raise_hand(cls): cls.raise_hand.set(True)
+    @classmethod
+    def set_ask_question(cls): cls.ask_question.set(True)
+    @classmethod
+    def set_say_thanks(cls): cls.say_thanks.set(True)
 
     @classmethod
     def peek_birthday(cls) -> bool: return cls.birthday.peek()
@@ -84,6 +93,12 @@ class Buttons_vals:
     def peek_stop_recording(cls) -> bool: return cls.stop_recording.peek()
     @classmethod
     def peek_dance(cls) -> bool: return cls.dance.peek()  # NEW
+    @classmethod
+    def peek_raise_hand(cls) -> bool: return cls.raise_hand.peek()
+    @classmethod
+    def peek_ask_question(cls) -> bool: return cls.ask_question.peek()
+    @classmethod
+    def peek_say_thanks(cls) -> bool: return cls.say_thanks.peek()
 
     @classmethod
     def consume_birthday(cls) -> bool: return cls.birthday.consume()
@@ -91,6 +106,12 @@ class Buttons_vals:
     def consume_stop_recording(cls) -> bool: return cls.stop_recording.consume()
     @classmethod
     def consume_dance(cls) -> bool: return cls.dance.consume()  # NEW
+    @classmethod
+    def consume_raise_hand(cls) -> bool: return cls.raise_hand.consume()
+    @classmethod
+    def consume_ask_question(cls) -> bool: return cls.ask_question.consume()
+    @classmethod
+    def consume_say_thanks(cls) -> bool: return cls.say_thanks.consume()
 
 class Mic_UI:
     """Thread-safe runtime settings."""
@@ -200,7 +221,42 @@ def create_app():
             </div>
             </div>
 
-          <div class="grid gap-4">
+          <div class="grid gap-5">
+            <!-- Raise Hand -->
+            <button id="btn-raise-hand"
+              class="relative pulse btn-press rounded-xl px-5 py-6 text-xl font-semibold shadow-lg ring-1 ring-white/10
+                     bg-gradient-to-br from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500
+                     focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-cyan-300 focus:ring-offset-transparent flex items-center justify-center gap-3">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M14 2a2 2 0 0 1 2 2v6.5l.03.03a2 2 0 0 1 2.97 1.74V18a6 6 0 0 1-6 6h-1A6 6 0 0 1 6 18v-5a2 2 0 0 1 3.97-.27L10 13V4a2 2 0 0 1 4 0z"/>
+              </svg>
+              Raise Hand
+            </button>
+
+            <!-- Ask Question -->
+            <button id="btn-ask-question"
+              class="relative pulse btn-press rounded-xl px-5 py-6 text-xl font-semibold shadow-lg ring-1 ring-white/10
+                     bg-gradient-to-br from-violet-500 to-indigo-600 hover:from-violet-400 hover:to-indigo-500
+                     focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-300 focus:ring-offset-transparent flex items-center justify-center gap-3">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z"/>
+              </svg>
+              Ask Question
+            </button>
+
+            <!-- Say Thanks -->
+            <button id="btn-say-thanks"
+              class="relative pulse btn-press rounded-xl px-5 py-6 text-xl font-semibold shadow-lg ring-1 ring-white/10
+                     bg-gradient-to-br from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500
+                     focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-300 focus:ring-offset-transparent flex items-center justify-center gap-3">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+              </svg>
+              Say Thanks
+            </button>
+
+            <hr class="border-white/10 my-1"/>
+
             <!-- Birthday -->
             <button id="btn-birthday"
               class="relative pulse btn-press rounded-xl px-5 py-5 text-lg font-semibold shadow-lg ring-1 ring-white/10
@@ -383,6 +439,9 @@ def create_app():
           }
         }
 
+        document.getElementById('btn-raise-hand').addEventListener('click', ()=>setFlag('raise_hand'));
+        document.getElementById('btn-ask-question').addEventListener('click', ()=>setFlag('ask_question'));
+        document.getElementById('btn-say-thanks').addEventListener('click', ()=>setFlag('say_thanks'));
         document.getElementById('btn-birthday').addEventListener('click', ()=>setFlag('birthday'));
         document.getElementById('btn-stop').addEventListener('click', ()=>setFlag('stop_recording'));
         document.getElementById('btn-dance').addEventListener('click', ()=>setFlag('dance'));
@@ -392,6 +451,9 @@ def create_app():
           if(e.key.toLowerCase()==='b') setFlag('birthday');
           if(e.key.toLowerCase()==='x') setFlag('stop_recording');
           if(e.key.toLowerCase()==='d') setFlag('dance');
+          if(e.key.toLowerCase()==='r') setFlag('raise_hand');
+          if(e.key.toLowerCase()==='q') setFlag('ask_question');
+          if(e.key.toLowerCase()==='t') setFlag('say_thanks');
         });
 
         // Slider events (snap + save)
@@ -445,6 +507,12 @@ def create_app():
             Buttons_vals.set_stop_recording()
         elif kind == "dance":  # NEW
             Buttons_vals.set_dance()
+        elif kind == "raise_hand":
+            Buttons_vals.set_raise_hand()
+        elif kind == "ask_question":
+            Buttons_vals.set_ask_question()
+        elif kind == "say_thanks":
+            Buttons_vals.set_say_thanks()
         else:
             return jsonify({"error": "unknown flag kind"}), 400
         return jsonify({"ok": True, "kind": kind})
@@ -488,6 +556,9 @@ def create_app():
             "birthday": Buttons_vals.peek_birthday(),
             "stop_recording": Buttons_vals.peek_stop_recording(),
             "dance": Buttons_vals.peek_dance(),  # NEW
+            "raise_hand": Buttons_vals.peek_raise_hand(),
+            "ask_question": Buttons_vals.peek_ask_question(),
+            "say_thanks": Buttons_vals.peek_say_thanks(),
         })
 
     @app.get("/api/flags/consume/birthday")
@@ -507,6 +578,24 @@ def create_app():
         if not require_api_key():
             return jsonify({"error": "Unauthorized"}), 401
         return jsonify({"ok": True, "value": Buttons_vals.consume_dance()})
+
+    @app.get("/api/flags/consume/raise_hand")
+    def api_consume_raise_hand():
+        if not require_api_key():
+            return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"ok": True, "value": Buttons_vals.consume_raise_hand()})
+
+    @app.get("/api/flags/consume/ask_question")
+    def api_consume_ask_question():
+        if not require_api_key():
+            return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"ok": True, "value": Buttons_vals.consume_ask_question()})
+
+    @app.get("/api/flags/consume/say_thanks")
+    def api_consume_say_thanks():
+        if not require_api_key():
+            return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"ok": True, "value": Buttons_vals.consume_say_thanks()})
 
     @app.get("/api/health")
     def api_health():
