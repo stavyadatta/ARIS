@@ -29,6 +29,12 @@ def poll_commands():
                     Buttons_vals.set_stop_recording()
                 elif kind == "dance":
                     Buttons_vals.set_dance()
+                elif kind == "raise_hand":
+                    Buttons_vals.set_raise_hand()
+                elif kind == "ask_question":
+                    Buttons_vals.set_ask_question()
+                elif kind == "say_thanks":
+                    Buttons_vals.set_say_thanks()
                 elif kind == "cycle_volume":
                     new_vol = Volume.cycle()
                     print(f"[bridge] Cycled volume to: {new_vol}")

@@ -16,20 +16,26 @@ VOSK_MODEL_PATH = os.path.join(os.path.dirname(__file__), "model")
 # Wake word variants (all lowercase)
 WAKE_WORDS = {
     "ginny", "jeanie", "jenny", "genie", "jeannie", "jinny",
-    "ginnie", "genny", "jenna", "gina",
+    "ginnie", "genny", "jenna", "gina", "jimmy", "gimmy",
 }
 
 # Fuzzy matching threshold (0-100). 75 catches Vosk transcription variants
 # while rejecting unrelated words.
 FUZZY_THRESHOLD = 75
 
-# Sound localization
-SOUND_POLL_INTERVAL = 0.0   # seconds between ALSoundLocalization polls
-SOUND_LOC_EXPIRY = 3.0      # ignore sound locations older than this (seconds)
-MIN_CONFIDENCE = 0.0         # minimum confidence to accept a sound direction
-SOUND_SENSITIVITY = 0.8      # ALSoundLocalization sensitivity parameter
+# SRP-PHAT-HSDA sound localization
+SOUND_LOC_EXPIRY = 5.0       # ignore sound locations older than this (seconds)
+SRP_NFFT = 1024              # FFT window size (samples at 48kHz, ~21ms per frame)
+SRP_COARSE_STEP = 10         # coarse grid resolution (degrees)
+SRP_FINE_STEP = 1            # fine grid resolution (degrees)
+SRP_REFINE_RADIUS = 15       # fine scan half-width around best coarse direction (degrees)
+SRP_MIC_ACCEPTANCE = 150     # directivity model: mic acceptance half-angle (degrees)
+SRP_MSW_DELTA = None         # MSW half-width in samples (None = auto from mic geometry)
+SRP_ENABLE_MSW = False       # disable MSW to save CPU on Pi (minor accuracy trade-off)
+SRP_MAX_FRAMES = 2           # max time-frames per buffer (2 frames = 36 FFTs)
+SRP_MIN_CONFIDENCE = 1.5     # minimum peak-to-mean ratio to accept a direction
 
 # Movement
 MOVEMENT_COOLDOWN = 5.0      # seconds between consecutive wake-word movements
-MOVEMENT_MODE = "head_and_body"  # "head", "body", or "head_and_body"
+MOVEMENT_MODE = "body"           # "head", "body", or "head_and_body"
 HEAD_SPEED = 0.15            # fraction of max speed for head interpolation

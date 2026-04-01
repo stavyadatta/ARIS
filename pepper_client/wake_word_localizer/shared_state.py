@@ -20,6 +20,12 @@ class SharedState:
         # maxlen=300 (~30s at 100ms chunks) provides backpressure
         self._audio_queue = deque(maxlen=300)
 
+        # 4-channel audio queue: srp_audio_stream -> sound_tracker (SRP-PHAT)
+        # Each item is a numpy array of shape (n_samples, 4).
+        # ALAudioDevice sends ~170ms buffers at 48kHz (~5.9 buffers/sec),
+        # so maxlen=30 holds ~5 seconds.
+        self._srp_audio_queue = deque(maxlen=30)
+
         # Wake word event: transcriber -> movement executor
         self._wake_event = threading.Event()
 
@@ -53,6 +59,18 @@ class SharedState:
         """Non-blocking pop. Returns None if empty."""
         try:
             return self._audio_queue.popleft()
+        except IndexError:
+            return None
+
+    # --- SRP 4-channel audio queue ---
+
+    def push_srp_audio(self, multichannel_array):
+        self._srp_audio_queue.append(multichannel_array)
+
+    def pop_srp_audio(self):
+        """Non-blocking pop. Returns None if empty."""
+        try:
+            return self._srp_audio_queue.popleft()
         except IndexError:
             return None
 
