@@ -81,3 +81,7 @@ node_modules/
 
 # Ignore the .env file
 *.env
+
+
+./grpc_communication/grpc_pb2.py
+./grpc_communication/grpc_pb2_grpc.py
