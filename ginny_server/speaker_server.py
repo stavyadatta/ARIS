@@ -81,7 +81,7 @@ def serve(port=50051, max_workers=10, model="eres2netv2"):
 
 {BOLD}  Storage:{RESET}
     Faces   /workspace/database/face_db/
-    Voices  /workspace/database/{model_dir}/
+    Voices  /workspace/database/embedding_accumulation_method/{model_dir}/
 
 {DIM}  Loading models...{RESET}
 """)

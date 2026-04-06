@@ -51,29 +51,31 @@ def _log_event(icon, label, detail, color=_RESET):
 
 # ===================== Model Registry =====================
 
+_DB_ROOT = "/workspace/database/embedding_accumulation_method"
+
 MODEL_REGISTRY = {
     "eres2netv2": {
         "display_name": "ERes2NetV2",
         "model_id": "iic/speech_eres2netv2_sv_zh-cn_16k-common",
-        "db_dir": "/workspace/database/voice_eres2netv2",
+        "db_dir": f"{_DB_ROOT}/voice_eres2netv2",
         "emb_dim": 192,
     },
     "titanet": {
         "display_name": "TitaNet Large",
         "model_id": "nvidia/speakerverification_en_titanet_large",
-        "db_dir": "/workspace/database/voice_titanet",
+        "db_dir": f"{_DB_ROOT}/voice_titanet",
         "emb_dim": 192,
     },
     "redimnet": {
         "display_name": "ReDimNet B6",
         "model_id": "B6",
-        "db_dir": "/workspace/database/voice_redimnet",
+        "db_dir": f"{_DB_ROOT}/voice_redimnet",
         "emb_dim": 192,
     },
     "wavlm_ssl": {
         "display_name": "WavLM-MHFA (SSL-SV)",
         "model_id": "wavlm_mhfa",
-        "db_dir": "/workspace/database/voice_wavlm_ssl",
+        "db_dir": f"{_DB_ROOT}/voice_wavlm_ssl",
         "emb_dim": 256,
     },
 }
@@ -413,28 +415,59 @@ class _SpeakerRecognition:
 
     # ===================== Multi-Sample Enrollment Buffer =====================
 
-    MIN_ENROLL_DURATION = 20.0  # seconds — minimum total speech before enrollment
+    MIN_ENROLL_DURATION = 20.0   # seconds — minimum total speech before enrollment
+    MAX_PENDING_AUDIO = 60.0     # seconds — hard cap on accumulated audio per pending entry
+
+    # Adaptive pending-buffer match threshold:
+    #   threshold = min(BASE + SLOPE * total_duration, MAX)
+    # Permissive when noisy (early samples), strict (matches DB threshold) once stable.
+    PENDING_THRESHOLD_BASE = 0.5
+    PENDING_THRESHOLD_SLOPE = 0.01
+    PENDING_THRESHOLD_MAX = 0.7
+
+    @classmethod
+    def _adaptive_pending_threshold(cls, total_duration: float) -> float:
+        """Linear ramp from BASE to MAX over total_duration seconds of speech."""
+        return min(
+            cls.PENDING_THRESHOLD_BASE + cls.PENDING_THRESHOLD_SLOPE * total_duration,
+            cls.PENDING_THRESHOLD_MAX,
+        )
 
     def init_enrollment_buffer(self):
-        """Initialize/reset the pending enrollment buffer."""
-        self._pending = {}  # key: pending_id → {"embeddings": [], "best_audio": bytes, "best_duration": float, "total_duration": float}
+        """Initialize/reset the pending enrollment buffer.
+
+        Schema per pending entry:
+            {
+                "embeddings":         [np.ndarray, ...],  # for running-average match
+                "accumulated_audio":  bytearray,           # raw concat of cluster audio
+                "total_duration":     float,               # speech seconds (post-diar)
+                "capped":             bool,                # True once MAX_PENDING_AUDIO reached
+            }
+        """
+        self._pending = {}
         self._next_pending_id = 1
         _log_event("--", "ENROLL BUF", "Enrollment buffer initialized", _DIM)
 
     def match_or_buffer(self, embedding: np.ndarray, audio_data: bytes = None,
-                        sample_rate: int = 16000, min_samples: int = 3,
-                        pending_threshold: float = 0.5) -> dict:
+                        sample_rate: int = 16000, min_samples: int = 3) -> dict:
         """
         Match embedding against voice DB. If no match, add to pending enrollment buffer.
-        When a pending entry reaches min_samples, average + enroll.
+
+        Pending entries accumulate cluster audio (raw concat, no padding) until they
+        pass the gate (>=min_samples AND >=MIN_ENROLL_DURATION speech). On gate pass,
+        the accumulated audio is re-extracted through the speaker encoder once to
+        produce the final stitched embedding.
+
+        Pending-buffer match uses an adaptive threshold that scales with the
+        candidate entry's total_duration (see _adaptive_pending_threshold).
 
         Returns:
             {
-                "voice_id": str or None,   — matched or newly enrolled voice_id
+                "voice_id": str or None,
                 "confidence": float,
-                "is_new": bool,            — True if just enrolled from buffer
-                "is_pending": bool,        — True if added to buffer (not yet enrolled)
-                "pending_id": str or None, — which pending entry this belongs to
+                "is_new": bool,
+                "is_pending": bool,
+                "pending_id": str or None,
                 "status": str
             }
         """
@@ -453,31 +486,58 @@ class _SpeakerRecognition:
                 "status": f"recognized:{matched_id}"
             }
 
-        # Step 2: Match against pending buffer entries
+        # Step 2: Match against pending buffer entries (running average per entry)
         best_pending_id = None
         best_pending_score = 0.0
         emb_2d = embedding.reshape(1, -1)
 
         for pid, entry in self._pending.items():
-            # Compare against average of existing embeddings in this entry
             avg_emb = np.mean(entry["embeddings"], axis=0).reshape(1, -1)
             score = float(cosine_similarity(emb_2d, avg_emb)[0, 0])
             if score > best_pending_score:
                 best_pending_score = score
                 best_pending_id = pid
 
-        if best_pending_id and best_pending_score >= pending_threshold:
-            # Add to existing pending entry
+        if best_pending_id is not None:
+            # Adaptive threshold computed against the CANDIDATE entry's total_duration
+            candidate_dur = self._pending[best_pending_id]["total_duration"]
+            adaptive_thresh = self._adaptive_pending_threshold(candidate_dur)
+        else:
+            adaptive_thresh = self.PENDING_THRESHOLD_BASE
+
+        if best_pending_id and best_pending_score >= adaptive_thresh:
             entry = self._pending[best_pending_id]
+
+            if entry["capped"]:
+                # Cap reached — drop new audio/embedding silently (single warn per cap hit)
+                _log_event("..", "CAP HIT",
+                           f"{_BOLD}{best_pending_id}{_RESET}  "
+                           f"audio frozen at {entry['total_duration']:.1f}s, "
+                           f"new cluster ignored", _DIM)
+                return {
+                    "voice_id": None,
+                    "confidence": best_pending_score,
+                    "is_new": False,
+                    "is_pending": True,
+                    "pending_id": best_pending_id,
+                    "status": f"pending_capped:{best_pending_id}"
+                }
+
+            # Append embedding for running-average match
             entry["embeddings"].append(embedding)
 
-            # Track best (longest) audio for WAV save + total duration
+            # Append raw audio bytes (no silence, no padding)
             if audio_data:
                 dur = len(audio_data) / (sample_rate * 2)
+                entry["accumulated_audio"].extend(audio_data)
                 entry["total_duration"] += dur
-                if dur > entry["best_duration"]:
-                    entry["best_audio"] = audio_data
-                    entry["best_duration"] = dur
+
+                if entry["total_duration"] >= self.MAX_PENDING_AUDIO:
+                    entry["capped"] = True
+                    _log_event("!!", "CAP REACHED",
+                               f"{_BOLD}{best_pending_id}{_RESET}  "
+                               f"{entry['total_duration']:.1f}s "
+                               f">= {self.MAX_PENDING_AUDIO:.0f}s, freezing", _YELLOW)
 
             n_samples = len(entry['embeddings'])
             total_dur = entry["total_duration"]
@@ -485,9 +545,10 @@ class _SpeakerRecognition:
                        f"{_BOLD}{best_pending_id}{_RESET}  "
                        f"{n_samples}/{min_samples} samples  "
                        f"{total_dur:.1f}/{self.MIN_ENROLL_DURATION:.0f}s  "
-                       f"match={best_pending_score:.2f}", _CYAN)
+                       f"match={best_pending_score:.2f} thr={adaptive_thresh:.2f}",
+                       _CYAN)
 
-            # Check if ready to enroll (need both enough samples AND enough audio)
+            # Gate: enough samples AND enough speech
             if n_samples >= min_samples and total_dur >= self.MIN_ENROLL_DURATION:
                 return self._flush_enrollment(best_pending_id, sample_rate)
 
@@ -504,16 +565,19 @@ class _SpeakerRecognition:
         pid = f"pending_{self._next_pending_id}"
         self._next_pending_id += 1
         dur = len(audio_data) / (sample_rate * 2) if audio_data else 0.0
+        accum = bytearray()
+        if audio_data:
+            accum.extend(audio_data)
         self._pending[pid] = {
             "embeddings": [embedding],
-            "best_audio": audio_data,
-            "best_duration": dur,
+            "accumulated_audio": accum,
             "total_duration": dur,
+            "capped": dur >= self.MAX_PENDING_AUDIO,
         }
 
         _log_event("++", "NEW PENDING",
                    f"{_BOLD}{pid}{_RESET}  1/{min_samples} samples  "
-                   f"(new voice detected)", _MAGENTA)
+                   f"{dur:.1f}s  (new voice detected)", _MAGENTA)
 
         return {
             "voice_id": None,
@@ -525,21 +589,35 @@ class _SpeakerRecognition:
         }
 
     def _flush_enrollment(self, pending_id: str, sample_rate: int = 16000) -> dict:
-        """Enroll a pending entry: average embeddings, L2 normalize, save."""
+        """Enroll a pending entry by re-extracting an embedding from the FULL
+        accumulated (stitched) audio, then saving both the embedding and the WAV.
+
+        This replaces the old "average of per-cluster embeddings" approach: the
+        speaker encoder gets a longer, richer audio context to produce a single
+        prototype embedding, which is more reliable than averaging short-clip
+        embeddings.
+        """
         entry = self._pending.pop(pending_id)
-        embeddings = np.array(entry["embeddings"])
+        accumulated_audio = bytes(entry["accumulated_audio"])
+        n_samples = len(entry["embeddings"])
+        total_dur = entry["total_duration"]
 
-        # Average and L2 normalize
-        avg_embedding = np.mean(embeddings, axis=0)
-        avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)
+        # Re-extract embedding from the full stitched audio
+        stitched_embedding = self.extract_embedding(accumulated_audio, sample_rate)
 
-        # Generate voice_id and save
+        # L2 normalize
+        norm = np.linalg.norm(stitched_embedding)
+        if norm > 0:
+            stitched_embedding = stitched_embedding / norm
+
+        # Generate voice_id and save (saves npy + the FULL stitched WAV)
         voice_id = self._generate_voice_id()
-        self._save_voice(voice_id, avg_embedding, entry["best_audio"], sample_rate)
+        self._save_voice(voice_id, stitched_embedding, accumulated_audio, sample_rate)
 
         _log_event("**", "ENROLLED",
                    f"{_BOLD}{voice_id}{_RESET}  from {pending_id}  "
-                   f"({len(embeddings)} samples averaged)", _GREEN)
+                   f"({n_samples} samples, {total_dur:.1f}s stitched, "
+                   f"{len(accumulated_audio)} bytes)", _GREEN)
 
         return {
             "voice_id": voice_id,
