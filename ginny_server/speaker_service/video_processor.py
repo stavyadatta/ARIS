@@ -12,6 +12,7 @@ Face recognition runs independently on frames (decoupled).
 """
 import os
 import cv2
+import time
 import wave
 import logging
 import tempfile
@@ -70,13 +71,30 @@ def _annotate_chunk(args):
     Receives precomputed per-frame voice/diar entries (no timeline scans).
     """
     (src_path, start_frame, end_frame, fps, frame_w, frame_h,
-     voice_slice, diar_slice, num_diar_speakers, out_path) = args
+     voice_slice, diar_slice, num_diar_speakers,
+     summary_text, summary_until_frame, out_path) = args
 
     # Each worker is single-threaded; we parallelize at the process level.
     cv2.setNumThreads(1)
 
     cap = cv2.VideoCapture(src_path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    # *** FRAME-ACCURATE SEEK (do NOT use cap.set(CAP_PROP_POS_FRAMES, N)) ***
+    # cv2's POS_FRAMES seek is NOT precise for H.264 — it lands on the nearest
+    # keyframe at or BEFORE the requested frame. For a typical 2-5s keyframe
+    # interval, worker K that asks for frame `start_frame` can actually land
+    # 60-150 frames early. Each worker then reads a different absolute range
+    # than it was assigned, causing frame duplication + gaps when ffmpeg
+    # concats the chunks, which produces audio/video desync in the final
+    # muxed output.
+    #
+    # Fix: read-and-discard from frame 0 up to start_frame using cap.grab(),
+    # which decodes but doesn't copy the frame (cheap). Every worker starts
+    # at EXACTLY the right absolute frame.
+    for _ in range(start_frame):
+        if not cap.grab():
+            break
+
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(out_path, fourcc, fps, (frame_w, frame_h))
 
@@ -128,6 +146,15 @@ def _annotate_chunk(args):
             cv2.putText(frame, "(silence)", (frame_w - 163, diar_y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
 
+        # ---- TOP-LEFT SUMMARY BANNER (first 60s only) ----
+        # Absolute frame index for this iteration = start_frame + i
+        if (start_frame + i) < summary_until_frame:
+            # Two lines: header + the counts
+            cv2.putText(frame, "PIPELINE", (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1)
+            cv2.putText(frame, summary_text, (10, 48),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
         out.write(frame)
         written += 1
 
@@ -141,6 +168,9 @@ def process_video(video_path, max_duration, speaker_recognition, diarization):
     Process video with sliding-window diarization + multi-sample voice ReID.
     Face recognition has been removed from this path to isolate annotation cost.
     """
+    # Module-level import for the per-frame gate helpers and constants.
+    # Hoisted out of the per-window loop (perf: avoid repeat import overhead).
+    from ginny_server.core_api.speaker_recognition import speaker_recognition as sr_mod
     logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}.. VIDEO{RESET}        Starting sliding-window pipeline")
 
     # Trim if needed
@@ -186,7 +216,7 @@ def process_video(video_path, max_duration, speaker_recognition, diarization):
     WINDOW_SIZE = 30.0  # seconds
     WINDOW_OVERLAP = 10.0  # seconds
     WINDOW_STEP = WINDOW_SIZE - WINDOW_OVERLAP  # 20s step
-    MIN_CLUSTER_AUDIO = 3.0  # seconds — skip clusters shorter than this
+    MIN_CLUSTER_AUDIO = 0.0  # replaced by per-frame enrollment gate (kept for backward compat)
     MIN_ENROLL_SAMPLES = 3
 
     # Initialize enrollment buffer
@@ -221,21 +251,25 @@ def process_video(video_path, max_duration, speaker_recognition, diarization):
         end_sample = int(win_end * sample_rate) * 2
         window_audio = all_audio[start_sample:end_sample]
 
-        # Step 1: Diarize this window
+        # Step 1: Diarize this window AND get soft posteriors for the gate
         try:
-            diar_segments = diarization.diarize(window_audio, sample_rate)
+            diar_segments, soft_data, sw, class_map, frame_rate_hz = \
+                diarization.diarize_with_posteriors(window_audio, sample_rate)
         except Exception as e:
             logger.error(f"  {DIM}{_ts()}{RESET}  {YELLOW}!! DIAR{RESET}        Window {win_idx+1} failed: {e}")
             continue
 
-        # Group segments by diarization speaker label
-        clusters = {}  # diar_label → {"audio": bytearray, "segments": [(start, end)]}
+        # Group segments by diarization speaker label.
+        # Track per-segment byte lengths (parallel to "segments") for the
+        # per-frame gate's byte-aligned timeline computation.
+        clusters = {}  # diar_label → {"audio": bytearray, "segments": [(start, end)], "segment_byte_lens": [int]}
         for seg in diar_segments:
             label = seg["speaker"]
             if label not in clusters:
-                clusters[label] = {"audio": bytearray(), "segments": []}
+                clusters[label] = {"audio": bytearray(), "segments": [], "segment_byte_lens": []}
             clusters[label]["audio"].extend(seg["audio"])
             clusters[label]["segments"].append((seg["start"] + win_start, seg["end"] + win_start))
+            clusters[label]["segment_byte_lens"].append(len(seg["audio"]))
 
         cluster_summary = ', '.join(
             "{}({:.1f}s)".format(k, len(v["audio"]) // 2 / sample_rate)
@@ -247,51 +281,134 @@ def process_video(video_path, max_duration, speaker_recognition, diarization):
             f"{len(clusters)} speakers: {cluster_summary}"
         )
 
-        # Step 2: For each cluster, extract ERes2NetV2 embedding and match/buffer
+        # Per-frame gate constants (sr_mod imported once at function start)
+        samples_per_frame = round(sample_rate / frame_rate_hz)
+        bytes_per_frame = samples_per_frame * 2
+
+        # Step 2: For each cluster, apply the three-tier per-frame gate
         for diar_label, cluster in clusters.items():
             cluster_audio = bytes(cluster["audio"])
+            cluster_segments = cluster["segments"]
+            cluster_segment_byte_lens = cluster["segment_byte_lens"]
             cluster_dur = (len(cluster_audio) // 2) / sample_rate
 
             _get_color(diar_label, diar_color_map, DIAR_COLORS)
 
-            if cluster_dur < MIN_CLUSTER_AUDIO:
-                logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}    {diar_label}: {cluster_dur:.1f}s (too short, skipping){RESET}")
-                for seg_start, seg_end in cluster["segments"]:
-                    diar_timeline.append((seg_start, seg_end, diar_label, "?", win_idx + 1))
-                continue
+            # Hard invariant check (not assert): byte_lens MUST sum to the
+            # concatenated audio length. Violation would silently misalign
+            # the per-frame gate and could poison the voice DB.
+            if sum(cluster_segment_byte_lens) != len(cluster_audio):
+                raise RuntimeError(
+                    f"byte_lens mismatch: {sum(cluster_segment_byte_lens)} "
+                    f"vs {len(cluster_audio)} for {diar_label}"
+                )
 
-            # Extract embedding from concatenated cluster audio
+            _t0 = time.perf_counter()
             try:
-                embedding = speaker_recognition.extract_embedding(cluster_audio, sample_rate)
+                alone_timeline = sr_mod._compute_alone_timeline(
+                    cluster_segments, cluster_segment_byte_lens,
+                    soft_data, sw, class_map,
+                    frame_rate_hz, sample_rate,
+                    window_offset_s=win_start,
+                )
             except Exception as e:
-                logger.error(f"  {DIM}{_ts()}{RESET}  {YELLOW}    {diar_label}: embedding failed: {e}{RESET}")
-                for seg_start, seg_end in cluster["segments"]:
+                logger.error(f"  {DIM}{_ts()}{RESET}  {YELLOW}    {diar_label}: alone_timeline failed: {e}{RESET}")
+                for seg_start, seg_end in cluster_segments:
                     diar_timeline.append((seg_start, seg_end, diar_label, "?", win_idx + 1))
                 continue
 
-            # Match or buffer for enrollment
-            result = speaker_recognition.match_or_buffer(
-                embedding, cluster_audio, sample_rate,
-                min_samples=MIN_ENROLL_SAMPLES
+            # === Strict pass: enrollment threshold (0.8) ===
+            enroll_audio, enroll_frames, total_clean_strict = sr_mod._lccs_from_timeline(
+                alone_timeline,
+                sr_mod.PER_FRAME_ALONE_THRESHOLD_ENROLL,
+                cluster_audio, bytes_per_frame
             )
+            enroll_lccs_s = enroll_frames / frame_rate_hz
+            total_clean_strict_s = total_clean_strict / frame_rate_hz
+            frag_strict = (total_clean_strict / enroll_frames) if enroll_frames > 0 else float('inf')
 
-            voice_id = result["voice_id"] or result.get("pending_id", "?")
-            confidence = result["confidence"]
+            if enroll_lccs_s >= sr_mod.MIN_CLEAN_DURATION_ENROLL:
+                # === FULL tier ===
+                try:
+                    embedding = speaker_recognition.extract_embedding(enroll_audio, sample_rate)
+                    result = speaker_recognition.match_or_buffer(
+                        embedding, enroll_audio, sample_rate, min_samples=MIN_ENROLL_SAMPLES
+                    )
+                except Exception as e:
+                    logger.error(f"  {DIM}{_ts()}{RESET}  {YELLOW}    FULL {diar_label}: embed/match failed: {e}{RESET}")
+                    for seg_start, seg_end in cluster_segments:
+                        diar_timeline.append((seg_start, seg_end, diar_label, "?", win_idx + 1))
+                    continue
 
-            if result["voice_id"]:
-                _get_color(result["voice_id"], voice_color_map, VOICE_COLORS)
-
-            # Add to timelines
-            for seg_start, seg_end in cluster["segments"]:
-                diar_timeline.append((seg_start, seg_end, diar_label, voice_id, win_idx + 1))
+                voice_id = result["voice_id"] or result.get("pending_id", "?")
+                confidence = result["confidence"]
                 if result["voice_id"]:
-                    voice_timeline.append((seg_start, seg_end, result["voice_id"], confidence, result["status"]))
+                    _get_color(result["voice_id"], voice_color_map, VOICE_COLORS)
 
-            logger.info(
-                f"  {DIM}{_ts()}{RESET}  {GREEN}    {diar_label}{RESET}: "
-                f"{cluster_dur:.1f}s → {BOLD}{voice_id}{RESET}  "
-                f"conf={confidence:.2f}  {DIM}{result['status']}{RESET}"
+                _filter_ms = (time.perf_counter() - _t0) * 1000
+                logger.info(
+                    f"  {DIM}{_ts()}{RESET}  {GREEN}    FULL {diar_label}{RESET}: "
+                    f"raw={cluster_dur:.1f}s lccs@0.8={enroll_lccs_s:.1f}s "
+                    f"tot_clean={total_clean_strict_s:.1f}s (frag={frag_strict:.2f}) "
+                    f"filter={_filter_ms:.1f}ms → {BOLD}{voice_id}{RESET}  "
+                    f"conf={confidence:.2f}  {DIM}{result['status']}{RESET}"
+                )
+                for seg_start, seg_end in cluster_segments:
+                    diar_timeline.append((seg_start, seg_end, diar_label, voice_id, win_idx + 1))
+                    if result["voice_id"]:
+                        voice_timeline.append((seg_start, seg_end, result["voice_id"], confidence, result["status"]))
+                continue
+
+            # === Permissive pass: quick-match only (0.6) ===
+            quick_audio, quick_frames, total_clean_perm = sr_mod._lccs_from_timeline(
+                alone_timeline,
+                sr_mod.PER_FRAME_ALONE_THRESHOLD_QUICK,
+                cluster_audio, bytes_per_frame
             )
+            quick_lccs_s = quick_frames / frame_rate_hz
+
+            if quick_lccs_s < sr_mod.MIN_CLEAN_DURATION_QUICKMATCH:
+                # === SKIP tier ===
+                _filter_ms = (time.perf_counter() - _t0) * 1000
+                logger.info(
+                    f"  {DIM}{_ts()}{RESET}  {DIM}    SKIP {diar_label}: "
+                    f"raw={cluster_dur:.1f}s lccs@0.8={enroll_lccs_s:.1f}s "
+                    f"lccs@0.6={quick_lccs_s:.1f}s filter={_filter_ms:.1f}ms TOO CONTAMINATED{RESET}"
+                )
+                for seg_start, seg_end in cluster_segments:
+                    diar_timeline.append((seg_start, seg_end, diar_label, "?", win_idx + 1))
+                continue
+
+            # === QUICK-ONLY tier ===
+            try:
+                embedding = speaker_recognition.extract_embedding(quick_audio, sample_rate)
+                matched_id, match_conf = speaker_recognition._match_voice(embedding)
+            except Exception as e:
+                logger.error(f"  {DIM}{_ts()}{RESET}  {YELLOW}    QUICK {diar_label}: embed/match failed: {e}{RESET}")
+                for seg_start, seg_end in cluster_segments:
+                    diar_timeline.append((seg_start, seg_end, diar_label, "?", win_idx + 1))
+                continue
+
+            _filter_ms = (time.perf_counter() - _t0) * 1000
+            if matched_id is not None:
+                _get_color(matched_id, voice_color_map, VOICE_COLORS)
+                logger.info(
+                    f"  {DIM}{_ts()}{RESET}  {CYAN}    QUICK-ONLY {diar_label}{RESET}: "
+                    f"raw={cluster_dur:.1f}s lccs@0.6={quick_lccs_s:.1f}s "
+                    f"filter={_filter_ms:.1f}ms → {BOLD}{matched_id}{RESET}  "
+                    f"conf={match_conf:.2f}  {DIM}quick-matched{RESET}"
+                )
+                for seg_start, seg_end in cluster_segments:
+                    voice_timeline.append((seg_start, seg_end, matched_id, match_conf, "quick-matched"))
+                    diar_timeline.append((seg_start, seg_end, diar_label, matched_id, win_idx + 1))
+            else:
+                logger.info(
+                    f"  {DIM}{_ts()}{RESET}  {DIM}    QUICK-ONLY {diar_label}: "
+                    f"raw={cluster_dur:.1f}s lccs@0.6={quick_lccs_s:.1f}s "
+                    f"filter={_filter_ms:.1f}ms NO MATCH, DROPPED (no enrollment){RESET}"
+                )
+                for seg_start, seg_end in cluster_segments:
+                    diar_timeline.append((seg_start, seg_end, diar_label, "?", win_idx + 1))
 
     # Flush remaining pending enrollments (allow entries with 2+ samples at end)
     logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}.. FLUSH{RESET}       Enrolling remaining pending voices...")
@@ -353,6 +470,12 @@ def process_video(video_path, max_duration, speaker_recognition, diarization):
         n_workers = max(1, total_frames)
     chunk_size = (total_frames + n_workers - 1) // n_workers
 
+    # Summary banner for the first 60 seconds of the annotated video.
+    # Mirrors the `OK PIPELINE` log line.
+    summary_text = f"{num_diar_speakers} diar speakers, {num_voices} enrolled voices"
+    SUMMARY_BANNER_DURATION_S = 60.0
+    summary_until_frame = int(SUMMARY_BANNER_DURATION_S * video_fps)
+
     chunk_paths = []
     chunk_args = []
     for w in range(n_workers):
@@ -369,6 +492,8 @@ def process_video(video_path, max_duration, speaker_recognition, diarization):
             voice_per_frame[f_start:f_end],
             diar_per_frame[f_start:f_end],
             num_diar_speakers,
+            summary_text,
+            summary_until_frame,
             chunk_path,
         ))
 
@@ -388,6 +513,30 @@ def process_video(video_path, max_duration, speaker_recognition, diarization):
         f"  {DIM}{_ts()}{RESET}  {GREEN}{BOLD}OK ANNOTATED{RESET}   "
         f"{total_written} frames in {len(chunk_args)} chunks"
     )
+
+    # *** A/V DESYNC GUARD ***
+    # If total_written != total_frames, the concatenated video will have a
+    # different duration than the source audio, and ffmpeg's -shortest flag
+    # will clip whichever stream ends first. Warn loudly so the operator
+    # knows the annotation pipeline dropped/duplicated frames.
+    if total_written != total_frames:
+        delta = total_written - total_frames
+        drift_s = delta / video_fps
+        logger.warning(
+            f"  {DIM}{_ts()}{RESET}  {YELLOW}!! FRAME COUNT{RESET}  "
+            f"written={total_written} expected={total_frames} "
+            f"delta={delta:+d} frames ({drift_s:+.2f}s). "
+            f"A/V desync may be visible in the final muxed video."
+        )
+        # Per-chunk breakdown for debugging
+        for idx, (path, nw) in enumerate(results):
+            expected_n = chunk_args[idx][2] - chunk_args[idx][1]  # end - start
+            if nw != expected_n:
+                logger.warning(
+                    f"  {DIM}{_ts()}{RESET}  {YELLOW}   chunk {idx}{RESET}: "
+                    f"wrote {nw}/{expected_n} frames "
+                    f"(range [{chunk_args[idx][1]}, {chunk_args[idx][2]}))"
+                )
 
     # ---- 4. ffmpeg concat segments + mux original audio in one call ----
     concat_list_file = tempfile.NamedTemporaryFile(

@@ -736,3 +736,214 @@ class _SpeakerRecognition:
             "status": f"enrolled:{new_voice_id}",
             "embedding": embedding
         }
+
+
+# ===================== Per-Frame Soft-Posterior Enrollment Gate =====================
+# Two thresholds separate the permissive "just identify" path from the strict
+# "protect the DB" path. Enrollment writes a new row to the voice DB and is
+# expensive to undo, so it uses the stricter threshold.
+PER_FRAME_ALONE_THRESHOLD_QUICK = 0.60     # permissive: identify a known voice
+PER_FRAME_ALONE_THRESHOLD_ENROLL = 0.80    # strict: protect the DB from contamination
+MIN_CLEAN_DURATION_QUICKMATCH = 1.0        # seconds LCCS needed for quick-match
+MIN_CLEAN_DURATION_ENROLL = 3.0            # seconds LCCS needed for enrollment
+
+
+def _compute_alone_timeline(
+    cluster_segments,
+    cluster_segment_byte_lens,
+    soft_data_raw,
+    chunk_sliding_window,
+    powerset_class_map,
+    frame_rate_hz,
+    sample_rate,
+    window_offset_s=0.0,
+    apply_median_filter=True,
+):
+    """
+    Build a per-frame "single-speaker-any" probability timeline aligned to
+    the concatenated cluster audio byte layout.
+
+    Rationale (permutation invariance):
+        Within each chunk, DiariZen assigns local speaker labels {S0, S1, ...}.
+        Summing P over all single-speaker powerset classes gives
+        P(exactly one local speaker active), which is INVARIANT under any
+        permutation of local labels within that chunk. So we can AVERAGE the
+        single-speaker sum across overlapping chunks without knowing the
+        local-to-global speaker permutation. This DOES NOT identify WHICH
+        global speaker is alone — but combined with the hard Annotation's
+        cluster assignment (which already attributes the time to a specific
+        global cluster), it gives "this cluster's assigned speaker is the one
+        speaking alone" when P > 0.8 (overlap classes sum to < 0.2, so the
+        argmax must fall in a single-speaker class).
+
+    Coordinate system:
+        cluster_segments may carry window-GLOBAL wall-clock times (e.g.,
+        seg["start"] + win_start). chunk_sliding_window from get_segmentations
+        is window-LOCAL (chunks start at 0 within the window's audio).
+        Callers MUST pass window_offset_s = win_start so the helper subtracts
+        it before computing segment frame grid positions.
+
+    Byte-layout alignment:
+        cluster_audio is built by the caller as the concatenation of segment
+        audio byte buffers. Caller passes cluster_segment_byte_lens (actual
+        per-segment byte length) so output frame count equals
+        sum(byte_lens) // bytes_per_frame, matching cluster_audio exactly.
+
+    Median filter:
+        Applied POST-scatter on the 1-D output timeline (smooths the wall-clock
+        axis), NOT per-chunk pre-scatter. Size=11 mode='reflect'.
+
+    Args:
+        cluster_segments: list of (start_wc, end_wc) tuples (seconds, may be window-global)
+        cluster_segment_byte_lens: list of int byte lengths, same order/length as cluster_segments
+        soft_data_raw: np.ndarray (num_chunks, frames_per_chunk, num_powerset_classes)
+        chunk_sliding_window: pyannote SlidingWindow (window-local)
+        powerset_class_map: dict with "single_speaker_class_idxs" key
+        frame_rate_hz: posterior frame rate (e.g. 62.5)
+        sample_rate: audio sample rate (e.g. 16000)
+        window_offset_s: subtract from each segment's start to get window-local
+        apply_median_filter: smooth output timeline with size=11 median
+
+    Returns:
+        np.ndarray of shape (sum(cluster_segment_byte_lens) // bytes_per_frame,) float32.
+    """
+    from scipy.ndimage import median_filter
+
+    # Hard check (not assert) — invariant violation here would silently
+    # misalign cluster audio bytes against the posterior timeline and could
+    # poison the voice DB. Must remain enforced even under python -O.
+    if len(cluster_segments) != len(cluster_segment_byte_lens):
+        raise RuntimeError(
+            f"_compute_alone_timeline: segments ({len(cluster_segments)}) "
+            f"!= byte_lens ({len(cluster_segment_byte_lens)})"
+        )
+
+    bytes_per_sample = 2
+    samples_per_frame = round(sample_rate / frame_rate_hz)
+    bytes_per_frame = samples_per_frame * bytes_per_sample
+
+    per_segment_frames = [bl // bytes_per_frame for bl in cluster_segment_byte_lens]
+    total_output_frames = sum(per_segment_frames)
+
+    if total_output_frames == 0 or not cluster_segments:
+        return np.zeros(0, dtype=np.float32)
+
+    # Re-derive single-speaker class indices against the ACTUAL soft_data shape.
+    # The Powerset.cardinality computed at startup discovery can mismatch the
+    # model's actual output dimension if the loaded checkpoint's specs.classes
+    # / specs.powerset_max_classes don't reflect the true output channel count.
+    # Filter the discovered indices against the runtime shape to avoid OOB.
+    discovered_single_idxs = powerset_class_map["single_speaker_class_idxs"]
+    actual_num_classes = soft_data_raw.shape[-1]
+    single_idxs = [i for i in discovered_single_idxs if 0 <= i < actual_num_classes]
+    if not single_idxs:
+        # Fallback: derive from cardinality of a freshly-built powerset matching
+        # the actual shape. We don't know N and M, but we can infer single-speaker
+        # classes from the powerset enumeration: for any (N, M) layout, the
+        # single-speaker classes occupy positions [1 .. N] (silence is index 0,
+        # then single-speaker classes, then 2-overlap, etc.). For 4 classes:
+        # either N=2,M=2 (single=[1,2]) or N=3,M=1 (single=[1,2,3]).
+        # Without N, fall back to "all classes except silence and overlap by
+        # excluding the largest set sizes" — but the safest default is positions
+        # [1 .. min(N_discovered, actual_num_classes-1)].
+        fallback_max = min(len(discovered_single_idxs), actual_num_classes - 1)
+        single_idxs = list(range(1, 1 + fallback_max))
+        if not single_idxs:
+            raise RuntimeError(
+                f"_compute_alone_timeline: cannot derive single-speaker class indices. "
+                f"discovered={discovered_single_idxs}, actual_num_classes={actual_num_classes}, "
+                f"soft_data_raw.shape={soft_data_raw.shape}"
+            )
+
+    alone_per_chunk = soft_data_raw[:, :, single_idxs].sum(axis=-1).astype(np.float32)
+    num_chunks, frames_per_chunk = alone_per_chunk.shape
+
+    chunk_starts = np.array(
+        [chunk_sliding_window[c].start for c in range(num_chunks)],
+        dtype=np.float64
+    )
+    frame_offsets_sec = np.arange(frames_per_chunk, dtype=np.float64) / frame_rate_hz
+    chunk_frame_wc = chunk_starts[:, None] + frame_offsets_sec[None, :]
+    chunk_frame_global = np.round(chunk_frame_wc * frame_rate_hz).astype(np.int64)
+
+    output = np.zeros(total_output_frames, dtype=np.float32)
+    counts = np.zeros(total_output_frames, dtype=np.int32)
+
+    chunk_flat_global = chunk_frame_global.ravel()
+    chunk_flat_probs = alone_per_chunk.ravel()
+
+    out_offset = 0
+    for (s_start_global, _s_end_global), seg_frames in zip(cluster_segments, per_segment_frames):
+        if seg_frames == 0:
+            continue
+        if out_offset + seg_frames > total_output_frames:
+            seg_frames = total_output_frames - out_offset
+            if seg_frames <= 0:
+                break
+
+        # Convert window-global wall-clock to window-local for chunk alignment
+        s_start_local = s_start_global - window_offset_s
+        seg_start_frame = int(round(s_start_local * frame_rate_hz))
+
+        rel_pos = chunk_flat_global - seg_start_frame
+        valid = (rel_pos >= 0) & (rel_pos < seg_frames)
+
+        flat_out_idx = out_offset + rel_pos[valid]
+        flat_probs = chunk_flat_probs[valid]
+        np.add.at(output, flat_out_idx, flat_probs)
+        np.add.at(counts, flat_out_idx, 1)
+
+        out_offset += seg_frames
+
+    mask = counts > 0
+    output[mask] /= counts[mask]
+    # Frames with no chunk coverage stay 0.0 → rejected by threshold
+
+    if apply_median_filter and total_output_frames >= 1:
+        output = median_filter(output, size=11, mode='reflect')
+
+    return output
+
+
+def _lccs_from_timeline(alone_timeline, threshold, cluster_audio, bytes_per_frame):
+    """
+    Find the longest contiguous clean span in the alone-probability timeline
+    and return its corresponding audio bytes.
+
+    Args:
+        alone_timeline: (num_frames,) float32 from _compute_alone_timeline
+        threshold: per-frame P(single_speaker_any) threshold (e.g. 0.6 or 0.8)
+        cluster_audio: concatenated cluster PCM bytes (matches alone_timeline layout)
+        bytes_per_frame: number of audio bytes per posterior frame
+
+    Returns:
+        (contiguous_audio_bytes, lccs_frames: int, total_clean_frames: int)
+        Caller computes durations in seconds via frames / frame_rate_hz.
+    """
+    num_frames = len(alone_timeline)
+    if num_frames == 0:
+        return b"", 0, 0
+
+    clean_mask = alone_timeline > threshold
+    total_clean_frames = int(clean_mask.sum())
+
+    if total_clean_frames == 0:
+        return b"", 0, 0
+
+    padded = np.concatenate([[False], clean_mask, [False]])
+    diffs = np.diff(padded.astype(np.int8))
+    run_starts = np.where(diffs == 1)[0]
+    run_ends = np.where(diffs == -1)[0]
+    run_lengths = run_ends - run_starts
+    best = int(np.argmax(run_lengths))
+    lccs_start_frame = int(run_starts[best])
+    lccs_end_frame = int(run_ends[best])
+    lccs_frames = int(lccs_end_frame - lccs_start_frame)
+
+    byte_start = lccs_start_frame * bytes_per_frame
+    byte_end = lccs_end_frame * bytes_per_frame
+    byte_end = min(byte_end, len(cluster_audio))
+    byte_start = min(byte_start, byte_end)
+    contiguous_bytes = cluster_audio[byte_start:byte_end]
+
+    return contiguous_bytes, lccs_frames, total_clean_frames

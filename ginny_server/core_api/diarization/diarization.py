@@ -111,6 +111,134 @@ class _DiariZenCUDA1(DiariZenPipeline):
 
         assert self._segmentation.model.specifications.powerset is True
 
+    def call_with_posteriors(self, in_wav, sess_name=None):
+        """
+        Like pipeline.__call__() but also returns the raw soft powerset posteriors.
+        Single forward pass of segmentation.
+
+        The hard path is byte-identical to upstream inference.py:120-190 because:
+          1. get_segmentations(soft=True) returns raw powerset probabilities.
+          2. We replay self._segmentation.conversion(soft_data, soft=False) which
+             IS the exact Powerset.to_multilabel call upstream's soft=False path
+             runs internally (see pyannote-audio inference.py:225-230 and
+             Powerset.forward at powerset.py:130).
+          3. The resulting multilabel tensor (chunks, frames, num_local_speakers)
+             is the SAME tensor upstream passes to median_filter and downstream.
+
+        Returns:
+            (result, soft_data_raw, sw)
+            - result: pyannote Annotation, byte-identical to __call__() output.
+            - soft_data_raw: np.ndarray (num_chunks, frames_per_chunk, num_powerset_classes),
+              dtype float32, UNFILTERED. Consumers apply their own filter to a copy.
+            - sw: SlidingWindow of the segmentation output (chunk stride).
+
+        Body mirrors DiariZen inference.py:120-190; update in lockstep if upstream changes.
+        Last verified against DiariZen commit: 510d2fe39cbf02e38b9e87ef2154e274d5ef9af0
+        """
+        from pyannote.audio.utils.signal import Binarize
+        from scipy.ndimage import median_filter
+        import torchaudio
+        from pyannote.core import SlidingWindowFeature
+        from pyannote.database import ProtocolFile
+
+        assert self._segmentation.model.specifications.powerset is True, \
+            "Model must be powerset-trained"
+        assert hasattr(self, 'apply_median_filtering'), \
+            "Pipeline must have apply_median_filtering attribute (DiariZen contract)"
+        assert hasattr(self._segmentation, 'conversion'), \
+            "Inference wrapper must have conversion attribute (pyannote Inference contract)"
+
+        in_wav = in_wav if not isinstance(in_wav, ProtocolFile) else in_wav['audio']
+        waveform, sample_rate = torchaudio.load(in_wav)
+        waveform = torch.unsqueeze(waveform[0], 0)
+
+        # *** SINGLE SOFT FORWARD PASS ***
+        soft_segmentations = self.get_segmentations(
+            {"waveform": waveform, "sample_rate": sample_rate},
+            soft=True
+        )
+        soft_data_raw = np.asarray(soft_segmentations.data, dtype=np.float32)
+        sw = soft_segmentations.sliding_window
+
+        # *** BYTE-IDENTICAL HARD PATH: replay upstream's Powerset.to_multilabel ***
+        # self._segmentation.conversion is the Powerset instance upstream already
+        # uses when you call get_segmentations(soft=False). Calling it with
+        # soft=False does: argmax -> one_hot -> matmul(mapping) -> multilabel.
+        # Result shape: (chunks, frames, num_local_speakers). Binary float.
+        #
+        # Byte-identity proof: upstream's soft=True path returns exp(logits) per
+        # Powerset.to_multilabel. argmax is monotone under exp, so
+        # argmax(exp(x)) == argmax(x). Therefore calling
+        # conversion(exp(logits), soft=False) yields the same argmax and thus
+        # the same multilabel projection as conversion(logits, soft=False).
+        conversion = self._segmentation.conversion
+        # Device alignment for the conversion call:
+        # - The Inference wrapper stores the canonical device on `self._segmentation.device`
+        #   and uses it to move the model in __init__ (`self.model.to(self.device)`).
+        # - But it does NOT move `self.conversion` to the device in __init__ — that
+        #   only happens in a separate `to()` method that may never be invoked.
+        # - So `conversion.mapping` may be on CPU even when the model is on cuda:2.
+        # - Note: pyannote's Model class does NOT expose a `.device` attribute, so
+        #   we use the Inference wrapper's `.device` as the source of truth, with a
+        #   safe fallback to the first model parameter's device.
+        try:
+            target_device = self._segmentation.device
+        except AttributeError:
+            target_device = next(self._segmentation.model.parameters()).device
+        if conversion.mapping.device != target_device:
+            conversion.to(target_device)
+        soft_tensor = torch.from_numpy(soft_data_raw).to(target_device)
+        multilabel_hard = conversion(soft_tensor, soft=False).cpu().numpy()
+        binarized_segmentations = SlidingWindowFeature(multilabel_hard, sw)
+
+        # *** MEDIAN FILTER: exact upstream parity (inference.py:129-130) ***
+        if self.apply_median_filtering:
+            binarized_segmentations.data = median_filter(
+                binarized_segmentations.data, size=(1, 11, 1), mode='reflect'
+            )
+
+        # Replay upstream inference.py:135-183 verbatim on the multilabel tensor
+        count = self.speaker_count(
+            binarized_segmentations,
+            self._segmentation.model._receptive_field,
+            warm_up=(0.0, 0.0),
+        )
+
+        embeddings = self.get_embeddings(
+            {"waveform": waveform, "sample_rate": sample_rate},
+            binarized_segmentations,
+            exclude_overlap=self.embedding_exclude_overlap,
+        )
+
+        hard_clusters, _, _ = self.clustering(
+            embeddings=embeddings,
+            segmentations=binarized_segmentations,
+            min_clusters=self.min_speakers,
+            max_clusters=self.max_speakers
+        )
+
+        count.data = np.minimum(count.data, self.max_speakers).astype(np.int8)
+        inactive_speakers = np.sum(binarized_segmentations.data, axis=1) == 0
+        hard_clusters[inactive_speakers] = -2
+        discrete_diarization, _ = self.reconstruct(
+            binarized_segmentations,
+            hard_clusters,
+            count,
+        )
+
+        to_annotation = Binarize(
+            onset=0.5, offset=0.5, min_duration_on=0.0, min_duration_off=0.0
+        )
+        result = to_annotation(discrete_diarization)
+        result.uri = sess_name
+
+        if self.rttm_out_dir is not None and sess_name is not None:
+            rttm_out = os.path.join(self.rttm_out_dir, sess_name + ".rttm")
+            with open(rttm_out, "w") as f:
+                f.write(result.to_rttm())
+
+        return result, soft_data_raw, sw
+
     @classmethod
     def from_pretrained(
         cls,
@@ -169,6 +297,84 @@ class _Diarization:
             device=self.device,
             max_speakers=max_speakers,
         )
+
+        # *** Powerset discovery (Phase 2) ***
+        # Verified attribute paths against vendored source:
+        #   inference.py:154 - self.conversion = conversion[0] (Powerset instance on Inference wrapper)
+        #   task.py:103 - powerset_max_classes is a flat int attribute on Specifications
+        #   powerset.py:48-53 - mapping and cardinality registered as buffers
+        seg_inference = self.pipeline._segmentation
+        seg_model = seg_inference.model
+        specs = seg_model.specifications
+
+        if not getattr(specs, 'powerset', False):
+            raise RuntimeError(
+                "Loaded segmentation model is not a powerset model. "
+                "This pipeline requires a powerset-trained DiariZen checkpoint."
+            )
+
+        num_local_classes = len(specs.classes)
+        max_per_frame = specs.powerset_max_classes
+        num_powerset_classes = specs.num_powerset_classes
+
+        if not hasattr(seg_inference, 'conversion'):
+            raise RuntimeError(
+                "Inference wrapper has no 'conversion' attribute. "
+                "This pyannote version is incompatible with the per-frame gate."
+            )
+        conversion = seg_inference.conversion
+        if not hasattr(conversion, 'mapping') or not hasattr(conversion, 'cardinality'):
+            raise RuntimeError(
+                f"Conversion object {type(conversion).__name__} has no mapping/cardinality. "
+                f"Expected a Powerset instance; got something else."
+            )
+
+        mapping = conversion.mapping.detach().cpu().numpy().astype(np.int8)
+        cardinality = conversion.cardinality.detach().cpu().numpy().astype(np.int64)
+
+        if mapping.shape != (num_powerset_classes, num_local_classes):
+            raise RuntimeError(
+                f"Powerset mapping shape mismatch: expected "
+                f"({num_powerset_classes}, {num_local_classes}), got {mapping.shape}"
+            )
+
+        single_speaker_class_idxs = np.where(cardinality == 1)[0].tolist()
+        # Filter out any indices that are out of bounds for num_powerset_classes
+        single_speaker_class_idxs = [idx for idx in single_speaker_class_idxs if idx < num_powerset_classes]
+        silence_idxs = np.where(cardinality == 0)[0].tolist()
+        overlap_class_idxs = np.where(cardinality >= 2)[0].tolist()
+
+        if len(single_speaker_class_idxs) != num_local_classes:
+            raise RuntimeError(
+                f"Powerset expected {num_local_classes} single-speaker classes, "
+                f"got {len(single_speaker_class_idxs)}"
+            )
+        if len(silence_idxs) != 1:
+            raise RuntimeError(
+                f"Powerset expected 1 silence class, got {len(silence_idxs)}"
+            )
+
+        self.powerset_class_map = {
+            "single_speaker_class_idxs": single_speaker_class_idxs,
+            "silence_class_idx": silence_idxs[0],
+            "overlap_class_idxs": overlap_class_idxs,
+        }
+
+        # Frame rate via public attribute first, private fallback
+        try:
+            frame_step = seg_model.example_output.frames.step
+            frame_rate_source = "example_output.frames"
+        except AttributeError:
+            frame_step = seg_model._receptive_field.step
+            frame_rate_source = "_receptive_field"
+        self.segmentation_frame_rate_hz = 1.0 / frame_step
+
+        print(f"[diarization] model classes: num_local={num_local_classes}, "
+              f"max_per_frame={max_per_frame}, num_powerset_classes={num_powerset_classes}")
+        print(f"[diarization] powerset cardinality: single={single_speaker_class_idxs}, "
+              f"silence={silence_idxs[0]}, overlap={overlap_class_idxs}")
+        print(f"[diarization] segmentation frame rate: {self.segmentation_frame_rate_hz:.2f}Hz "
+              f"(source: {frame_rate_source})")
 
         # Per-session audio buffers
         self._session_buffers: Dict[str, dict] = {}
@@ -242,6 +448,53 @@ class _Diarization:
             })
 
         return segments
+
+    def diarize_with_posteriors(self, audio_data: bytes, sample_rate: int = 16000):
+        """
+        Like diarize() but also returns soft powerset posteriors and metadata
+        needed by the per-frame enrollment gate.
+
+        Returns:
+            (segments, soft_data_raw, sw, powerset_class_map, frame_rate_hz)
+            - segments: identical to diarize() return
+            - soft_data_raw: np.ndarray (num_chunks, frames_per_chunk, num_powerset_classes), float32
+            - sw: SlidingWindow of segmentation chunks (window-local times)
+            - powerset_class_map: cached dict from __init__
+            - frame_rate_hz: cached float from __init__
+        """
+        duration = self.get_audio_duration(audio_data, sample_rate)
+        if duration < self.MIN_DIARIZATION_DURATION:
+            raise ValueError(
+                f"Audio too short for diarization ({duration:.1f}s, "
+                f"minimum {self.MIN_DIARIZATION_DURATION}s)."
+            )
+
+        with self._lock:
+            temp_wav = self._save_to_temp_wav(audio_data, sample_rate)
+            try:
+                result, soft_data_raw, sw = self.pipeline.call_with_posteriors(temp_wav)
+            finally:
+                if os.path.exists(temp_wav):
+                    os.remove(temp_wav)
+
+        audio_np = np.frombuffer(audio_data, dtype=np.int16)
+        segments = []
+        for turn, _, speaker in result.itertracks(yield_label=True):
+            start_sample = max(0, int(turn.start * sample_rate))
+            end_sample = min(len(audio_np), int(turn.end * sample_rate))
+            if end_sample <= start_sample:
+                continue
+            segments.append({
+                "speaker": speaker,
+                "start": turn.start,
+                "end": turn.end,
+                "audio": audio_np[start_sample:end_sample].tobytes()
+            })
+
+        return (
+            segments, soft_data_raw, sw,
+            self.powerset_class_map, self.segmentation_frame_rate_hz,
+        )
 
     def accumulate_segment(self, session_id: str, audio_data: bytes,
                            segment_start_time: float, sample_rate: int = 16000) -> Optional[List[dict]]:

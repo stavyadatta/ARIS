@@ -1,4 +1,5 @@
 import cv2
+import time
 import logging
 import datetime
 import numpy as np
@@ -255,8 +256,12 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
         """
         WINDOW_SIZE = 30.0      # seconds
         WINDOW_OVERLAP = 10.0   # seconds
-        MIN_CLUSTER_AUDIO = 3.0 # seconds — skip shorter clusters
+        MIN_CLUSTER_AUDIO = 0.0 # replaced by per-frame enrollment gate
         MIN_ENROLL_SAMPLES = 3
+
+        # Hoisted import for the per-frame gate helpers and constants
+        # (avoid repeated import overhead inside the per-window loop).
+        from ginny_server.core_api.speaker_recognition import speaker_recognition as sr_mod
 
         session_id = None
         current_face_id = None
@@ -388,9 +393,10 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                          f"[{win_start:.0f}s - {win_end:.0f}s]  {buffer_duration:.1f}s audio",
                          _CYAN)
 
-                    # Run diarization on the window
+                    # Run diarization on the window AND get soft posteriors for the gate
                     try:
-                        diar_segments = self.diarization.diarize(window_audio, sample_rate)
+                        diar_segments, soft_data, sw, class_map, frame_rate_hz = \
+                            self.diarization.diarize_with_posteriors(window_audio, sample_rate)
                     except Exception as e:
                         _log("!!", "DIAR ERROR", str(e), _RED)
                         # Shift buffer and continue
@@ -399,21 +405,20 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                         buffer_start_time += (WINDOW_SIZE - WINDOW_OVERLAP)
                         continue
 
-                    # Group diarized segments by speaker label
+                    # Group diarized segments by speaker label.
+                    # Track per-segment byte lengths for the per-frame gate.
                     clusters = {}
                     for seg in diar_segments:
                         label = seg["speaker"]
                         if label not in clusters:
-                            clusters[label] = {"audio": bytearray(), "segments": []}
+                            clusters[label] = {"audio": bytearray(), "segments": [], "segment_byte_lens": []}
                         clusters[label]["audio"].extend(seg["audio"])
                         clusters[label]["segments"].append(
                             (seg["start"] + win_start, seg["end"] + win_start)
                         )
+                        clusters[label]["segment_byte_lens"].append(len(seg["audio"]))
 
                     # DIAGNOSTIC: raw segment count + per-cluster breakdown
-                    # Use this to distinguish clustering-merge contamination
-                    # (few labels, long clusters spanning the whole window) from
-                    # overlap contamination (many labels, fragmented short segs).
                     n_raw_segs = len(diar_segments)
                     _log("..", "CLUSTERS",
                          f"{len(clusters)} labels / {n_raw_segs} raw segs in window {window_count}",
@@ -429,30 +434,67 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                              f"span {_diag_span:.1f}s [{_diag_span_start:.1f}-{_diag_span_end:.1f}]",
                              _DIM)
 
-                    # For each cluster: ERes2NetV2 embedding → match/buffer
+                    # Per-frame gate constants (sr_mod imported once at method start)
+                    samples_per_frame = round(sample_rate / frame_rate_hz)
+                    bytes_per_frame = samples_per_frame * 2
+
+                    # For each cluster: three-tier per-frame enrollment gate
                     for diar_label, cluster in clusters.items():
                         cluster_audio = bytes(cluster["audio"])
+                        cluster_segments = cluster["segments"]
+                        cluster_segment_byte_lens = cluster["segment_byte_lens"]
                         cluster_dur = (len(cluster_audio) // 2) / sample_rate
 
-                        if cluster_dur < MIN_CLUSTER_AUDIO:
-                            _log("--", "SKIP",
-                                 f"{diar_label}: {cluster_dur:.1f}s (too short)", _DIM)
+                        # Hard invariant check (not assert): byte_lens MUST sum to
+                        # cluster_audio length. Violation would silently misalign
+                        # the per-frame gate and could poison the voice DB.
+                        if sum(cluster_segment_byte_lens) != len(cluster_audio):
+                            raise RuntimeError(
+                                f"byte_lens mismatch: {sum(cluster_segment_byte_lens)} "
+                                f"vs {len(cluster_audio)} for {diar_label}"
+                            )
+
+                        _t0 = time.perf_counter()
+                        try:
+                            alone_timeline = sr_mod._compute_alone_timeline(
+                                cluster_segments, cluster_segment_byte_lens,
+                                soft_data, sw, class_map,
+                                frame_rate_hz, sample_rate,
+                                window_offset_s=win_start,
+                            )
+                        except Exception as e:
+                            _log("!!", "TIMELINE ERR", f"{diar_label}: {e}", _RED)
                             continue
 
-                        try:
-                            embedding = self.speaker_recognition.extract_embedding(
-                                cluster_audio, sample_rate
-                            )
-                            result = self.speaker_recognition.match_or_buffer(
-                                embedding, cluster_audio, sample_rate,
-                                min_samples=MIN_ENROLL_SAMPLES
-                            )
+                        # === Strict pass: enrollment threshold (0.8) ===
+                        enroll_audio, enroll_frames, total_clean_strict = sr_mod._lccs_from_timeline(
+                            alone_timeline,
+                            sr_mod.PER_FRAME_ALONE_THRESHOLD_ENROLL,
+                            cluster_audio, bytes_per_frame
+                        )
+                        enroll_lccs_s = enroll_frames / frame_rate_hz
+                        total_clean_strict_s = total_clean_strict / frame_rate_hz
+                        frag_strict = (total_clean_strict / enroll_frames) if enroll_frames > 0 else float('inf')
+
+                        if enroll_lccs_s >= sr_mod.MIN_CLEAN_DURATION_ENROLL:
+                            # === FULL tier ===
+                            try:
+                                embedding = self.speaker_recognition.extract_embedding(
+                                    enroll_audio, sample_rate
+                                )
+                                result = self.speaker_recognition.match_or_buffer(
+                                    embedding, enroll_audio, sample_rate,
+                                    min_samples=MIN_ENROLL_SAMPLES
+                                )
+                            except Exception as e:
+                                _log("!!", "FULL ERR", f"{diar_label}: {e}", _RED)
+                                continue
 
                             voice_id = result["voice_id"] or result.get("pending_id", "")
                             confidence = result["confidence"]
+                            _filter_ms = (time.perf_counter() - _t0) * 1000
 
-                            # Yield a result for each segment in this cluster
-                            for seg_start, seg_end in cluster["segments"]:
+                            for seg_start, seg_end in cluster_segments:
                                 yield pb2.SpeakerResult(
                                     speaker_id=voice_id,
                                     confidence=confidence,
@@ -464,7 +506,6 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                                     status=result["status"],
                                     video_timestamp=video_ts
                                 )
-                                # Record for post-session video
                                 recorded_voice_results.append((
                                     seg_start, seg_end, voice_id, confidence, result["status"]
                                 ))
@@ -472,13 +513,71 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                                     seg_start, seg_end, diar_label, voice_id
                                 ))
 
-                            _log("..", diar_label,
-                                 f"{cluster_dur:.1f}s → {_BOLD}{voice_id}{_RESET}  "
-                                 f"conf={confidence:.2f}  {_DIM}{result['status']}{_RESET}",
+                            _log("..", f"FULL {diar_label}",
+                                 f"raw={cluster_dur:.1f}s lccs@0.8={enroll_lccs_s:.1f}s "
+                                 f"tot_clean={total_clean_strict_s:.1f}s (frag={frag_strict:.2f}) "
+                                 f"filter={_filter_ms:.1f}ms → {_BOLD}{voice_id}{_RESET} "
+                                 f"conf={confidence:.2f} {_DIM}{result['status']}{_RESET}",
                                  _GREEN)
+                            continue
 
+                        # === Permissive pass: quick-match only (0.6) ===
+                        quick_audio, quick_frames, total_clean_perm = sr_mod._lccs_from_timeline(
+                            alone_timeline,
+                            sr_mod.PER_FRAME_ALONE_THRESHOLD_QUICK,
+                            cluster_audio, bytes_per_frame
+                        )
+                        quick_lccs_s = quick_frames / frame_rate_hz
+
+                        if quick_lccs_s < sr_mod.MIN_CLEAN_DURATION_QUICKMATCH:
+                            # === SKIP tier ===
+                            _filter_ms = (time.perf_counter() - _t0) * 1000
+                            _log("--", f"SKIP {diar_label}",
+                                 f"raw={cluster_dur:.1f}s lccs@0.8={enroll_lccs_s:.1f}s "
+                                 f"lccs@0.6={quick_lccs_s:.1f}s filter={_filter_ms:.1f}ms TOO CONTAMINATED",
+                                 _DIM)
+                            continue
+
+                        # === QUICK-ONLY tier ===
+                        try:
+                            embedding = self.speaker_recognition.extract_embedding(
+                                quick_audio, sample_rate
+                            )
+                            matched_id, match_conf = self.speaker_recognition._match_voice(embedding)
                         except Exception as e:
-                            _log("!!", "CLUSTER ERR", f"{diar_label}: {e}", _RED)
+                            _log("!!", "QUICK ERR", f"{diar_label}: {e}", _RED)
+                            continue
+
+                        _filter_ms = (time.perf_counter() - _t0) * 1000
+                        if matched_id is not None:
+                            for seg_start, seg_end in cluster_segments:
+                                yield pb2.SpeakerResult(
+                                    speaker_id=matched_id,
+                                    confidence=match_conf,
+                                    segment_start_time=seg_start,
+                                    segment_duration=seg_end - seg_start,
+                                    is_new_speaker=False,
+                                    session_id=session_id,
+                                    is_correction=False,
+                                    status="quick-matched",
+                                    video_timestamp=video_ts
+                                )
+                                recorded_voice_results.append((
+                                    seg_start, seg_end, matched_id, match_conf, "quick-matched"
+                                ))
+                                recorded_diar_results.append((
+                                    seg_start, seg_end, diar_label, matched_id
+                                ))
+                            _log("..", f"QUICK-ONLY {diar_label}",
+                                 f"raw={cluster_dur:.1f}s lccs@0.6={quick_lccs_s:.1f}s "
+                                 f"filter={_filter_ms:.1f}ms → {_BOLD}{matched_id}{_RESET} "
+                                 f"conf={match_conf:.2f} {_DIM}quick-matched{_RESET}",
+                                 _CYAN)
+                        else:
+                            _log("--", f"QUICK-ONLY {diar_label}",
+                                 f"raw={cluster_dur:.1f}s lccs@0.6={quick_lccs_s:.1f}s "
+                                 f"filter={_filter_ms:.1f}ms NO MATCH, DROPPED (no enrollment)",
+                                 _DIM)
 
                     # Shift buffer: keep last WINDOW_OVERLAP seconds
                     shift_bytes = int((WINDOW_SIZE - WINDOW_OVERLAP) * sample_rate * 2)
