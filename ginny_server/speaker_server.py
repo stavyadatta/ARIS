@@ -32,19 +32,57 @@ def _patched_torch_load(*args, **kwargs):
     return _original_torch_load(*args, **kwargs)
 torch.load = _patched_torch_load
 
+import re
 import grpc
 import logging
+import datetime
 from concurrent import futures
 
 from speaker_service import SpeakerRecognitionManager
 import grpc_communication.grpc_pb2_grpc as pb2_grpc
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    datefmt="%H:%M:%S"
+
+# ----------------------------------------------------------------------------
+# Logging: stream to stdout (with ANSI colors) AND tee to a log file
+# (with ANSI codes stripped). Log files live in ginny_server/logs/.
+# ----------------------------------------------------------------------------
+_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FILE = os.path.join(
+    _LOG_DIR,
+    f"speaker_server_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
 )
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class _PlainFormatter(logging.Formatter):
+    """Formatter that strips ANSI escape sequences for the file handler."""
+    def format(self, record):
+        msg = super().format(record)
+        return _ANSI_RE.sub("", msg)
+
+
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+# Wipe any handlers a transitive import may have installed (e.g. via
+# logging.basicConfig elsewhere) so we control the output cleanly.
+for _h in list(_root.handlers):
+    _root.removeHandler(_h)
+
+_stream_handler = logging.StreamHandler()
+_stream_handler.setLevel(logging.INFO)
+_stream_handler.setFormatter(logging.Formatter("%(message)s"))
+_root.addHandler(_stream_handler)
+
+_file_handler = logging.FileHandler(_LOG_FILE, mode="w", encoding="utf-8")
+_file_handler.setLevel(logging.INFO)
+_file_handler.setFormatter(_PlainFormatter("%(asctime)s  %(name)s  %(message)s",
+                                            datefmt="%H:%M:%S"))
+_root.addHandler(_file_handler)
+
 logger = logging.getLogger("speaker_server")
+logger.info(f"Log file: {_LOG_FILE}")
 
 CYAN = "\033[96m"
 GREEN = "\033[92m"

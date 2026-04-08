@@ -410,9 +410,24 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
                             (seg["start"] + win_start, seg["end"] + win_start)
                         )
 
+                    # DIAGNOSTIC: raw segment count + per-cluster breakdown
+                    # Use this to distinguish clustering-merge contamination
+                    # (few labels, long clusters spanning the whole window) from
+                    # overlap contamination (many labels, fragmented short segs).
+                    n_raw_segs = len(diar_segments)
                     _log("..", "CLUSTERS",
-                         f"{len(clusters)} speakers in window {window_count}",
+                         f"{len(clusters)} labels / {n_raw_segs} raw segs in window {window_count}",
                          _GREEN)
+                    for _diag_label, _diag_cluster in clusters.items():
+                        _diag_audio_dur = (len(_diag_cluster["audio"]) // 2) / sample_rate
+                        _diag_n_segs = len(_diag_cluster["segments"])
+                        _diag_span_start = min(s for s, _ in _diag_cluster["segments"])
+                        _diag_span_end = max(e for _, e in _diag_cluster["segments"])
+                        _diag_span = _diag_span_end - _diag_span_start
+                        _log("  ", f"  {_diag_label}",
+                             f"{_diag_n_segs} segs, {_diag_audio_dur:.1f}s audio, "
+                             f"span {_diag_span:.1f}s [{_diag_span_start:.1f}-{_diag_span_end:.1f}]",
+                             _DIM)
 
                     # For each cluster: ERes2NetV2 embedding → match/buffer
                     for diar_label, cluster in clusters.items():
@@ -527,7 +542,7 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
         try:
             for progress, result_path in process_video(
                 temp_input.name, max_duration,
-                self.face_recognition, self.speaker_recognition, self.diarization
+                self.speaker_recognition, self.diarization
             ):
                 if progress:
                     yield pb2.VideoDownloadChunk(

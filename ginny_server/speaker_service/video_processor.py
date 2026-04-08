@@ -17,6 +17,7 @@ import logging
 import tempfile
 import datetime
 import subprocess
+import multiprocessing as mp
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -61,9 +62,84 @@ def _get_color(identity, color_map, palette):
     return color_map[identity]
 
 
-def process_video(video_path, max_duration, face_recognition, speaker_recognition, diarization):
+def _annotate_chunk(args):
+    """
+    Worker process: annotate a contiguous slice of frames and write a chunk .mp4.
+
+    Visuals replicate the original layout exactly, minus the timestamp.
+    Receives precomputed per-frame voice/diar entries (no timeline scans).
+    """
+    (src_path, start_frame, end_frame, fps, frame_w, frame_h,
+     voice_slice, diar_slice, num_diar_speakers, out_path) = args
+
+    # Each worker is single-threaded; we parallelize at the process level.
+    cv2.setNumThreads(1)
+
+    cap = cv2.VideoCapture(src_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(out_path, fourcc, fps, (frame_w, frame_h))
+
+    n = end_frame - start_frame
+    written = 0
+    for i in range(n):
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # ---- VOICE: bottom bar (same look as original) ----
+        v_entry = voice_slice[i]
+        if v_entry is not None:
+            vid, vconf, vcolor = v_entry
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, frame_h - 70), (frame_w, frame_h),
+                          (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+            cv2.putText(frame, f"VOICE: {vid}", (10, frame_h - 45),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, vcolor, 2)
+            bar_w = int(vconf * 200)
+            cv2.rectangle(frame, (10, frame_h - 25),
+                          (10 + bar_w, frame_h - 15), vcolor, -1)
+            cv2.rectangle(frame, (10, frame_h - 25),
+                          (210, frame_h - 15), (100, 100, 100), 1)
+            cv2.putText(frame, f"{vconf:.2f}", (220, frame_h - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+            cv2.circle(frame, (frame_w - 30, 30), 10, vcolor, -1)
+        else:
+            cv2.circle(frame, (frame_w - 30, 30), 10, (80, 80, 80), -1)
+
+        # ---- DIARIZATION: top-right panel ----
+        cv2.putText(frame, f"DIAR: {num_diar_speakers} spk",
+                    (frame_w - 180, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        diar_y = 55
+        d_active = diar_slice[i]
+        if d_active:
+            for dlabel, dvid, dcolor in d_active:
+                cv2.circle(frame, (frame_w - 175, diar_y - 5), 6, dcolor, -1)
+                txt = f"{dlabel}"
+                dvid_s = str(dvid) if dvid is not None else ""
+                if dvid_s and dvid_s != "?" and not dvid_s.startswith("pending"):
+                    txt += f" = {dvid_s}"
+                cv2.putText(frame, txt, (frame_w - 163, diar_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, dcolor, 1)
+                diar_y += 20
+        else:
+            cv2.putText(frame, "(silence)", (frame_w - 163, diar_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
+
+        out.write(frame)
+        written += 1
+
+    cap.release()
+    out.release()
+    return out_path, written
+
+
+def process_video(video_path, max_duration, speaker_recognition, diarization):
     """
     Process video with sliding-window diarization + multi-sample voice ReID.
+    Face recognition has been removed from this path to isolate annotation cost.
     """
     logger.info(f"  {DIM}{_ts()}{RESET}  {CYAN}.. VIDEO{RESET}        Starting sliding-window pipeline")
 
@@ -227,138 +303,140 @@ def process_video(video_path, max_duration, face_recognition, speaker_recognitio
     num_voices = len(voice_color_map)
     logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK PIPELINE{RESET}    {num_diar_speakers} diar speakers, {num_voices} enrolled voices")
 
-    # ===================== ANNOTATE VIDEO =====================
-    yield "Annotating video (face bbox + voice + diarization)...", None
+    # ===================== ANNOTATE VIDEO (PARALLEL) =====================
+    # Strategy:
+    #   1. Resolve all colors NOW (main thread) so workers don't mutate
+    #      shared color_map dicts.
+    #   2. Build per-frame lookup arrays voice_per_frame / diar_per_frame.
+    #      Each frame index resolves to a tiny picklable tuple — no
+    #      timeline scans inside the worker.
+    #   3. Split frames into N == cpu_count chunks. Each worker opens its
+    #      own VideoCapture, seeks to its start frame, annotates, writes
+    #      its own segment .mp4.
+    #   4. ffmpeg concat all segments + mux original audio in one call.
+    cap.release()  # release main-thread capture before workers spawn
 
-    output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, video_fps, (frame_w, frame_h))
+    yield "Annotating (parallel) ...", None
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    face_color_map = {}
-    frame_num = 0
-    face_skip = 10  # run face recognition every Nth frame
-    last_faces = []  # persist bbox/labels between skipped frames
+    # ---- 1. Pre-resolve colors for every voice/diar id we'll draw ----
+    for _, _, vid, _, _ in voice_timeline:
+        if vid:
+            _get_color(vid, voice_color_map, VOICE_COLORS)
+    for _, _, dlabel, _, _ in diar_timeline:
+        _get_color(dlabel, diar_color_map, DIAR_COLORS)
 
-    def get_active_voice(t):
-        for s, e, vid, conf, status in voice_timeline:
-            if s <= t <= e:
-                return vid, conf
-        return None, 0.0
+    # ---- 2. Build per-frame lookup arrays ----
+    voice_per_frame = [None] * total_frames
+    diar_per_frame = [[] for _ in range(total_frames)]
 
-    def get_active_diar(t):
-        active = []
-        for s, e, dlabel, vid, wnum in diar_timeline:
-            if s <= t <= e:
-                active.append((dlabel, vid, wnum))
-        return active
+    for s, e, vid, conf, _status in voice_timeline:
+        if not vid:
+            continue
+        vcolor = voice_color_map[vid]
+        f0 = max(0, int(s * video_fps))
+        f1 = min(total_frames, int(e * video_fps) + 1)
+        for f in range(f0, f1):
+            # Last writer wins on overlap (matches original linear-scan behavior)
+            voice_per_frame[f] = (vid, conf, vcolor)
 
-    while frame_num < total_frames:
-        ret, frame = cap.read()
-        if not ret:
+    for s, e, dlabel, vid, _wnum in diar_timeline:
+        dcolor = diar_color_map[dlabel]
+        entry = (dlabel, vid, dcolor)
+        f0 = max(0, int(s * video_fps))
+        f1 = min(total_frames, int(e * video_fps) + 1)
+        for f in range(f0, f1):
+            diar_per_frame[f].append(entry)
+
+    # ---- 3. Split into chunks and run pool ----
+    n_workers = max(1, mp.cpu_count())
+    if total_frames < n_workers:
+        n_workers = max(1, total_frames)
+    chunk_size = (total_frames + n_workers - 1) // n_workers
+
+    chunk_paths = []
+    chunk_args = []
+    for w in range(n_workers):
+        f_start = w * chunk_size
+        f_end = min(f_start + chunk_size, total_frames)
+        if f_start >= f_end:
             break
+        chunk_path = tempfile.NamedTemporaryFile(
+            delete=False, suffix=f"_chunk{w:02d}.mp4"
+        ).name
+        chunk_paths.append(chunk_path)
+        chunk_args.append((
+            working_video, f_start, f_end, video_fps, frame_w, frame_h,
+            voice_per_frame[f_start:f_end],
+            diar_per_frame[f_start:f_end],
+            num_diar_speakers,
+            chunk_path,
+        ))
 
-        frame_num += 1
-        video_time = frame_num / video_fps
+    logger.info(
+        f"  {DIM}{_ts()}{RESET}  {CYAN}.. PARALLEL{RESET}    "
+        f"{total_frames} frames across {len(chunk_args)} workers "
+        f"(~{chunk_size} frames/worker)"
+    )
 
-        if frame_num % 500 == 0:
-            yield f"Annotating frame {frame_num}/{total_frames} [{_vt(video_time)}]...", None
+    # Use spawn context to avoid potential cv2/fork interactions in a server.
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(processes=len(chunk_args)) as pool:
+        results = pool.map(_annotate_chunk, chunk_args)
 
-        # ---- FACE: detect every Nth frame, persist between ----
-        if frame_num % face_skip == 0:
-            last_faces = []
-            try:
-                faces = face_recognition.app.get(frame)
-                for face in faces:
-                    x1, y1, x2, y2 = face.bbox.astype(int)
-                    emb = face.embedding.reshape(1, -1)
-                    fid, fconf = None, 0.0
-                    if face_recognition.known_embeddings.size > 0:
-                        sim = cosine_similarity(emb, face_recognition.known_embeddings)
-                        best_idx = np.argmax(sim)
-                        best_score = float(sim[0, best_idx])
-                        if best_score >= (1 - face_recognition.recognition_threshold):
-                            fid = face_recognition.known_ids[best_idx]
-                            fconf = best_score
-                    if fid is None:
-                        # Enroll new face (same as face_recognition.enroll_face)
-                        fid = face_recognition.enroll_face(emb, frame)
-                        fconf = 0.0
-                    last_faces.append((x1, y1, x2, y2, fid, fconf))
-            except Exception:
-                pass
+    total_written = sum(n for _, n in results)
+    logger.info(
+        f"  {DIM}{_ts()}{RESET}  {GREEN}{BOLD}OK ANNOTATED{RESET}   "
+        f"{total_written} frames in {len(chunk_args)} chunks"
+    )
 
-        # Draw cached face results
-        for x1, y1, x2, y2, fid, fconf in last_faces:
-            color = _get_color(fid, face_color_map, FACE_COLORS)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            label = f"{fid} ({fconf:.2f})"
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-            cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw + 6, y1), color, -1)
-            cv2.putText(frame, label, (x1 + 3, y1 - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    # ---- 4. ffmpeg concat segments + mux original audio in one call ----
+    concat_list_file = tempfile.NamedTemporaryFile(
+        delete=False, suffix=".txt", mode="w"
+    )
+    for cp in chunk_paths:
+        concat_list_file.write(f"file '{cp}'\n")
+    concat_list_file.close()
 
-        # ---- TIMESTAMP ----
-        cv2.putText(frame, _vt(video_time), (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-        # ---- VOICE: bottom bar ----
-        active_voice, voice_conf = get_active_voice(video_time)
-        if active_voice:
-            vcolor = _get_color(active_voice, voice_color_map, VOICE_COLORS)
-            overlay = frame.copy()
-            cv2.rectangle(overlay, (0, frame_h - 70), (frame_w, frame_h), (0, 0, 0), -1)
-            cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-            cv2.putText(frame, f"VOICE: {active_voice}", (10, frame_h - 45),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, vcolor, 2)
-            bar_w = int(voice_conf * 200)
-            cv2.rectangle(frame, (10, frame_h - 25), (10 + bar_w, frame_h - 15), vcolor, -1)
-            cv2.rectangle(frame, (10, frame_h - 25), (210, frame_h - 15), (100, 100, 100), 1)
-            cv2.putText(frame, f"{voice_conf:.2f}", (220, frame_h - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
-            cv2.circle(frame, (frame_w - 30, 30), 10, vcolor, -1)
-        else:
-            cv2.circle(frame, (frame_w - 30, 30), 10, (80, 80, 80), -1)
-
-        # ---- DIARIZATION: top-right panel ----
-        active_diar = get_active_diar(video_time)
-        cv2.putText(frame, f"DIAR: {num_diar_speakers} spk", (frame_w - 180, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        diar_y = 55
-        if active_diar:
-            for dlabel, vid, wnum in active_diar:
-                dcolor = _get_color(dlabel, diar_color_map, DIAR_COLORS)
-                cv2.circle(frame, (frame_w - 175, diar_y - 5), 6, dcolor, -1)
-                txt = f"{dlabel}"
-                if vid and vid != "?" and not vid.startswith("pending"):
-                    txt += f" = {vid}"
-                cv2.putText(frame, txt, (frame_w - 163, diar_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, dcolor, 1)
-                diar_y += 20
-        else:
-            cv2.putText(frame, "(silence)", (frame_w - 163, diar_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
-
-        out.write(frame)
-
-    out.release()
-    cap.release()
-
-    logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}{BOLD}OK ANNOTATED{RESET}   {frame_num} frames")
-
-    # Mux audio
     final_output = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
     try:
         subprocess.run([
-            "ffmpeg", "-y", "-i", output_path, "-i", working_video,
-            "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0",
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0", "-i", concat_list_file.name,
+            "-i", working_video,
+            "-c:v", "copy",
+            "-map", "0:v:0", "-map", "1:a:0",
             "-shortest", final_output
         ], capture_output=True, check=True)
-        os.remove(output_path)
-        logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK MUX{RESET}         Audio muxed")
-    except Exception as e:
-        logger.warning(f"  {DIM}{_ts()}{RESET}  {YELLOW}!! MUX{RESET}         {e}")
-        final_output = output_path
+        logger.info(
+            f"  {DIM}{_ts()}{RESET}  {GREEN}OK MUX{RESET}         "
+            f"Concatenated {len(chunk_paths)} chunks + audio"
+        )
+    except subprocess.CalledProcessError as e:
+        logger.warning(
+            f"  {DIM}{_ts()}{RESET}  {YELLOW}!! MUX{RESET}         "
+            f"{e.stderr.decode(errors='replace')[-200:] if e.stderr else e}"
+        )
+        # Fallback: try concat without mux (audio missing) so user still
+        # gets a video back rather than nothing.
+        try:
+            subprocess.run([
+                "ffmpeg", "-y",
+                "-f", "concat", "-safe", "0", "-i", concat_list_file.name,
+                "-c", "copy", final_output
+            ], capture_output=True, check=True)
+        except Exception:
+            final_output = chunk_paths[0] if chunk_paths else None
+
+    # Cleanup chunks + concat list
+    for cp in chunk_paths:
+        try:
+            os.remove(cp)
+        except OSError:
+            pass
+    try:
+        os.remove(concat_list_file.name)
+    except OSError:
+        pass
 
     if working_video != video_path and os.path.exists(working_video):
         os.remove(working_video)
@@ -374,13 +452,7 @@ def process_video(video_path, max_duration, face_recognition, speaker_recognitio
     Windows       {num_windows} x {WINDOW_SIZE:.0f}s (overlap {WINDOW_OVERLAP:.0f}s)
     Diar speakers  {num_diar_speakers} (DiariZen clustering per window)
     Voice IDs      {num_voices} (ERes2NetV2, {MIN_ENROLL_SAMPLES}-sample enrollment)
-    Faces          {len(face_color_map)} unique
 
-{BLUE}{BOLD}  Faces:{RESET}""")
-    for fid in face_color_map:
-        print(f"    {fid}")
-
-    print(f"""
 {GREEN}{BOLD}  Voice ReID Timeline:{RESET}""")
     last_voice = None
     for seg_start, seg_end, vid, conf, status in voice_timeline:

@@ -35,6 +35,7 @@ class _DiariZenCUDA1(DiariZenPipeline):
         config_parse: Optional[Dict] = None,
         rttm_out_dir: Optional[str] = None,
         device: torch.device = torch.device("cuda:2"),
+        max_speakers: Optional[int] = None,
     ):
         import toml
         from pyannote.audio.pipelines import SpeakerDiarization as SpeakerDiarizationPipeline
@@ -49,6 +50,13 @@ class _DiariZenCUDA1(DiariZenPipeline):
 
         inference_config = config["inference"]["args"]
         clustering_config = config["clustering"]["args"]
+
+        # Runtime override of the global clustering speaker cap.
+        # Without this, the value baked into config.toml (typically 4) is used.
+        if max_speakers is not None:
+            print(f'Overriding clustering max_speakers: '
+                  f'{clustering_config.get("max_speakers")} -> {max_speakers}')
+            clustering_config["max_speakers"] = max_speakers
 
         print(f'Loaded configuration: {config}')
 
@@ -110,6 +118,7 @@ class _DiariZenCUDA1(DiariZenPipeline):
         cache_dir: str = None,
         rttm_out_dir: str = None,
         device: torch.device = torch.device("cuda:2"),
+        max_speakers: Optional[int] = None,
     ) -> "_DiariZenCUDA1":
         diarizen_hub = snapshot_download(
             repo_id=repo_id,
@@ -129,6 +138,7 @@ class _DiariZenCUDA1(DiariZenPipeline):
             embedding_model=embedding_model,
             rttm_out_dir=rttm_out_dir,
             device=device,
+            max_speakers=max_speakers,
         )
 
 
@@ -148,15 +158,16 @@ class _Diarization:
     def __init__(self,
                  model_name: str = "BUT-FIT/diarizen-wavlm-large-s80-md-v2",
                  device: str = "cuda:2",
-                 max_speakers: int = 4):
+                 max_speakers: int = 8):
         self.device = torch.device(device)
         self.max_speakers = max_speakers
         self._lock = threading.Lock()
 
-        # Load DiariZen with device override
+        # Load DiariZen with device override and runtime max_speakers cap.
         self.pipeline = _DiariZenCUDA1.from_pretrained(
             model_name,
-            device=self.device
+            device=self.device,
+            max_speakers=max_speakers,
         )
 
         # Per-session audio buffers
