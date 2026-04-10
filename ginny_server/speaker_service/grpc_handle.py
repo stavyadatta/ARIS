@@ -317,6 +317,7 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
 
                 # === QUICK MATCH: per-segment voice matching (immediate) ===
                 seg_duration = (len(audio_data) // 2) / sample_rate
+                _log("..", "SEG IN", f"dur={seg_duration*1000:.0f}ms  bytes={len(audio_data)}", _DIM)
                 if seg_duration >= 0.5:
                     try:
                         seg_embedding = self.speaker_recognition.extract_embedding(

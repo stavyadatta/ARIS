@@ -126,26 +126,6 @@ def _annotate_chunk(args):
         else:
             cv2.circle(frame, (frame_w - 30, 30), 10, (80, 80, 80), -1)
 
-        # ---- DIARIZATION: top-right panel ----
-        cv2.putText(frame, f"DIAR: {num_diar_speakers} spk",
-                    (frame_w - 180, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        diar_y = 55
-        d_active = diar_slice[i]
-        if d_active:
-            for dlabel, dvid, dcolor in d_active:
-                cv2.circle(frame, (frame_w - 175, diar_y - 5), 6, dcolor, -1)
-                txt = f"{dlabel}"
-                dvid_s = str(dvid) if dvid is not None else ""
-                if dvid_s and dvid_s != "?" and not dvid_s.startswith("pending"):
-                    txt += f" = {dvid_s}"
-                cv2.putText(frame, txt, (frame_w - 163, diar_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, dcolor, 1)
-                diar_y += 20
-        else:
-            cv2.putText(frame, "(silence)", (frame_w - 163, diar_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
-
         # ---- TOP-LEFT SUMMARY BANNER (first 60s only) ----
         # Absolute frame index for this iteration = start_frame + i
         if (start_frame + i) < summary_until_frame:
@@ -472,7 +452,7 @@ def process_video(video_path, max_duration, speaker_recognition, diarization):
 
     # Summary banner for the first 60 seconds of the annotated video.
     # Mirrors the `OK PIPELINE` log line.
-    summary_text = f"{num_diar_speakers} diar speakers, {num_voices} enrolled voices"
+    summary_text = f"{num_voices} enrolled voices"
     SUMMARY_BANNER_DURATION_S = 60.0
     summary_until_frame = int(SUMMARY_BANNER_DURATION_S * video_fps)
 
