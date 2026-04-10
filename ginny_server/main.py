@@ -5,6 +5,7 @@ from threading import Thread
 
 from media_manager import MediaManager, IMAGE_QUEUE_LEN
 from secondary_channel import SecondaryGRPC
+from speaker_service import SpeakerRecognitionManager
 import grpc_communication.grpc_pb2_grpc as pb2_grpc
 
 from image_viewer import image_serve
@@ -28,6 +29,10 @@ def serve():
     )
     pb2_grpc.add_SecondaryChannelServicer_to_server(
         SecondaryGRPC(),
+        server
+    )
+    pb2_grpc.add_SpeakerRecognitionServiceServicer_to_server(
+        SpeakerRecognitionManager(),
         server
     )
     server.add_insecure_port("[::]:50051")

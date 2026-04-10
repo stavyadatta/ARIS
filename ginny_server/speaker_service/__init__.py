@@ -1,0 +1,1 @@
+from .grpc_handle import SpeakerRecognitionManager
