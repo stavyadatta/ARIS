@@ -100,7 +100,7 @@ MODEL_DISPLAY = {
 }
 
 
-def serve(port=50051, max_workers=10, model="eres2netv2"):
+def serve(port=50051, max_workers=10, model="eres2netv2", braid=False):
     # Set env var so core_api/__init__.py picks up the model choice
     os.environ["SPEAKER_MODEL"] = model
     model_label, model_dir = MODEL_DISPLAY[model]
@@ -116,10 +116,12 @@ def serve(port=50051, max_workers=10, model="eres2netv2"):
     Face    InsightFace buffalo_l     {DIM}cuda:0{RESET}
     Voice   {model_label:<25}{DIM}cuda:1{RESET}
     Diar    DiariZen v2 (4-spk)       {DIM}cuda:2{RESET}
+    BRAID   {'ENABLED' if braid else 'disabled':<25}{DIM}--braid{RESET}
 
 {BOLD}  Storage:{RESET}
     Faces   /workspace/database/face_db/
     Voices  /workspace/database/embedding_accumulation_method/{model_dir}/
+    BRAID   /workspace/database/braid_sys_db/
 
 {DIM}  Loading models...{RESET}
 """)
@@ -128,6 +130,15 @@ def serve(port=50051, max_workers=10, model="eres2netv2"):
         SpeakerRecognitionManager(),
         server
     )
+
+    if braid:
+        # Lazy import: heavy BRAID deps only load when the flag is set.
+        from core_api.braid.grpc_handle import BraidServiceServicer
+        pb2_grpc.add_BraidServiceServicer_to_server(
+            BraidServiceServicer(),
+            server,
+        )
+        logger.info(f"{GREEN}BraidService registered alongside SpeakerRecognitionService (--braid).{RESET}")
 
     server.add_insecure_port(f"[::]:{port}")
 
@@ -154,5 +165,8 @@ if __name__ == "__main__":
                         help="Speaker verification model (default: eres2netv2)")
     parser.add_argument("--port", type=int, default=50051,
                         help="gRPC port (default: 50051)")
+    parser.add_argument("--braid", action="store_true",
+                        help="Also register BraidService (BRAID closed-loop "
+                             "perception/decision/action pipeline).")
     args = parser.parse_args()
-    serve(port=args.port, model=args.model)
+    serve(port=args.port, model=args.model, braid=args.braid)

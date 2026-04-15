@@ -142,3 +142,103 @@ message SpeakerResult {
     string status = 8;             // Human-readable status for debugging (e.g., "recognized:face_1")
     float video_timestamp = 9;     // Video mode: echoed timestamp from source video
 }
+
+// ============ BRAID (Phase 2) ============
+//
+// Bayesian Robotic Audio-Visual Identity Decision Network.
+// See /workspace/blueprint/BRAID_Blueprint_v1.md for full spec.
+// This service is append-only — the existing SpeakerRecognitionService is untouched.
+
+service BraidService {
+    // Client streams one 30s tick (audio chunks + frame JPEGs + SSL events + meta).
+    // Server replies with per-person decisions and a single robot action.
+    rpc RunTick(stream BraidTickChunk) returns (BraidTickResult);
+}
+
+message BraidMeta {
+    string session_id = 1;
+    int32  tick_id = 2;
+    double window_start_ts = 3;   // Unix seconds at tick start
+    float  robot_heading_rad = 4; // Robot body heading at tick start (world frame)
+    int32  audio_sample_rate = 5; // e.g. 16000
+    int32  audio_num_channels = 6;// e.g. 4
+}
+
+message BraidAudioChunk {
+    bytes  pcm = 1;               // Interleaved int16 PCM, channel-first as [ch0 s0, ch1 s0, ch2 s0, ch3 s0, ch0 s1, ...]
+    double ts = 2;                // Unix seconds at chunk start
+    int32  channels = 3;
+    int32  sample_rate = 4;
+}
+
+message BraidFrameChunk {
+    bytes  jpeg = 1;              // JPEG-encoded RGB frame
+    double ts = 2;                // Unix seconds
+    int32  width = 3;
+    int32  height = 4;
+}
+
+message SslEvent {
+    float  azimuth_rad = 1;
+    float  elevation_rad = 2;
+    float  confidence = 3;
+    double ts = 4;
+}
+
+message BraidTickChunk {
+    int32  tick_id = 1;
+    string session_id = 2;
+    float  robot_heading_rad = 3;
+    oneof payload {
+        BraidMeta       meta         = 10;
+        BraidAudioChunk audio_chunk  = 11;
+        BraidFrameChunk frame_chunk  = 12;
+        SslEvent        ssl_event    = 13;
+    }
+}
+
+enum DecisionState {
+    UNKNOWN_STATE = 0;
+    RECOGNISE = 1;
+    CONFIRM = 2;
+    ENROL = 3;
+    EXPLORE = 4;
+    UNKNOWN = 5;
+}
+
+enum ActionType {
+    STAY = 0;
+    ROTATE_LEFT = 1;
+    ROTATE_RIGHT = 2;
+    MOVE_FORWARD = 3;
+}
+
+message PersonDecision {
+    string person_id = 1;
+    DecisionState state = 2;
+    float p_best = 3;
+    float p_unk = 4;
+    float margin = 5;
+    float entropy = 6;
+    string identity = 7;              // gallery id or ""
+    bool modality_agreement = 8;
+    float face_quality = 9;
+    float ssl_azimuth_rad = 10;
+    float prev_state_hint = 11;       // optional: last tick's state as int (for logs)
+    string reason = 12;               // e.g. "no_signal", "low_quality_face"
+}
+
+message BraidAction {
+    ActionType type = 1;
+    float magnitude = 2;              // radians for rotate_*, meters for move_forward
+    string reason = 3;
+    string target_person_id = 4;
+}
+
+message BraidTickResult {
+    repeated PersonDecision persons = 1;
+    BraidAction action = 2;
+    int32 tick_id = 3;
+    string session_id = 4;
+    double tick_wall_seconds = 5;
+}

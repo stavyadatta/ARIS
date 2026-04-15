@@ -1,0 +1,58 @@
+# BRAID threshold configuration.
+# Values transcribed verbatim from Blueprint §3.6.
+# Edit this file (no code changes required) to retune the decision network.
+
+# -------- Decision-state thresholds (§3.5, §3.6) --------
+tau_recog:     0.70      # Recognise confidence
+Q_recog:       1.5       # Recognise quality gate (margin * (M+1))
+tau_confirm:   0.40      # Confirm confidence
+Q_confirm:     0.8       # Confirm quality gate
+tau_enrol_unk: 0.60      # Enrol: unknown-class dominates posterior
+Q_enrol:       0.5       # Enrol minimum face quality
+Q_min:         0.3       # Minimum usable face quality
+Q_min_enrol:   0.3       # Below this, explore "low_quality_face"
+H_explore:     1.5       # Entropy threshold (bits) for EXPLORE
+tau_bridge:    0.3       # ASD temporal overlap to bridge audio cluster → face
+
+# -------- Prior / variance parameters --------
+p_new:         0.3       # Prior that observed person is not in gallery
+sigma_0_deg:   15.0      # Base SSL uncertainty (degrees)
+sigma_det_deg: 5.0       # Face detection azimuth noise (degrees)
+sigma_drift_deg: 10.0    # 30s movement allowance (degrees)
+
+# -------- Embedding operating points --------
+theta_face:    0.30      # Face cosine threshold (Platt-calibrated)
+beta_face:     0.05      # Sigmoid sharpness for face likelihood
+lambda_face:   0.20      # Expected similarity for non-match (face)
+theta_voice:   0.25      # Voice cosine threshold
+beta_voice:    0.06      # Sigmoid sharpness for voice likelihood
+lambda_voice:  0.15      # Expected non-match similarity (voice)
+
+# -------- Re-association / gallery --------
+reassoc_face_cos: 0.5    # Cross-window re-association by face cosine
+reassoc_voice_cos: 0.5   # Cross-window re-association by voice cosine
+gallery_ema_alpha: 0.1   # EMA coefficient when RECOGNISE updates gallery
+
+# -------- Face-quality composite (§2.1) --------
+face_area_min_px: 6400   # 80x80
+lap_min:          40.0   # Laplacian variance threshold (sharpness)
+yaw_sigma_deg:    30.0   # Head-pose falloff
+
+# -------- Perception infra --------
+num_azimuth_bins: 36     # 10° bins over [-pi, pi]
+camera_hfov_deg:  57.0   # Pepper horizontal FoV
+max_persons:      4      # Blueprint cap
+
+# -------- Action policy (§4.1) --------
+rotate_min_deg:   10.0   # Don't rotate for tiny offsets
+rotate_nudge_deg: 15.0   # Modality-disagreement nudge
+move_forward_m:   0.3    # Step size when moving forward
+
+# -------- Tick timing --------
+tick_window_seconds: 30.0
+
+# -------- Gallery paths --------
+gallery_dir: "/workspace/database/braid_sys_db"
+
+# -------- ASD stub score (used when Light-ASD weights absent) --------
+asd_stub_default_alpha: 0.5
