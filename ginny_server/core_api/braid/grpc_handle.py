@@ -23,6 +23,7 @@ from grpc_communication import grpc_pb2_grpc as pb2_grpc
 from .config import load_config
 from .decision import DecisionState
 from .gallery import BraidGallery
+from .log_style import C
 from .perception import PerceptionEngine, TickBundle
 from .temporal import SessionState
 from .tick import run_tick
@@ -106,7 +107,7 @@ class BraidServiceServicer(pb2_grpc.BraidServiceServicer):
                     if img is not None:
                         frames.append((float(f.ts), img))
                 except Exception as e:
-                    logger.warning("[grpc] frame decode failed: %s", e)
+                    logger.warning(f"{C.grpc}[grpc]{C.r} frame decode failed: %s", e)
             elif payload == "ssl_event":
                 s = chunk.ssl_event
                 ssl_events.append((float(s.ts), float(s.azimuth_rad),
@@ -158,11 +159,11 @@ class BraidServiceServicer(pb2_grpc.BraidServiceServicer):
 
     def RunTick(self, request_iterator, context):
         t0 = time.time()
-        logger.info("[grpc] RunTick RPC begin — draining client stream")
+        logger.info(f"{C.grpc}[grpc]{C.r} RunTick RPC begin — draining client stream")
         try:
             bundle = self._assemble_bundle(request_iterator)
             logger.info(
-                "[grpc] bundle assembled tick=%d session=%s audio=%dB "
+                f"{C.grpc}[grpc]{C.r} bundle assembled tick=%d session=%s audio=%dB "
                 "(sr=%d ch=%d) frames=%d ssl=%d heading=%.2frad",
                 bundle.tick_id, bundle.session_id, len(bundle.audio_pcm),
                 bundle.audio_sample_rate, bundle.audio_channels,
@@ -170,7 +171,7 @@ class BraidServiceServicer(pb2_grpc.BraidServiceServicer):
                 bundle.robot_heading_rad,
             )
         except Exception as e:
-            logger.exception("[grpc] failed to assemble bundle: %s", e)
+            logger.exception(f"{C.grpc}[grpc]{C.r} failed to assemble bundle: %s", e)
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             context.set_details(f"Failed to assemble tick bundle: {e}")
             return pb2.BraidTickResult()
@@ -179,12 +180,12 @@ class BraidServiceServicer(pb2_grpc.BraidServiceServicer):
         try:
             tick_res = run_tick(bundle, self.engine, self.gallery, session, self.cfg)
         except Exception as e:
-            logger.exception("[grpc] run_tick failed: %s", e)
+            logger.exception(f"{C.grpc}[grpc]{C.r} run_tick failed: %s", e)
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"run_tick failed: {e}")
             return pb2.BraidTickResult(tick_id=bundle.tick_id,
                                        session_id=bundle.session_id)
-        logger.info("[grpc] tick=%d persons=%d action=%s wall=%.2fs",
+        logger.info(f"{C.grpc}[grpc]{C.r} tick=%d persons=%d action=%s wall=%.2fs",
                     bundle.tick_id, len(tick_res.persons),
                     tick_res.action.type, time.time() - t0)
         return self._build_result(tick_res)

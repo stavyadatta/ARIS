@@ -17,6 +17,7 @@ import numpy as np
 from .association import PersonObservation
 from .config import BraidConfig
 from .gallery import BraidGallery
+from .log_style import C
 
 logger = logging.getLogger("braid")
 
@@ -252,7 +253,7 @@ class PosteriorComputer:
             if (person.face_emb is not None and person.voice_emb is not None) else False
 
         logger.info(
-            "[posterior] person=%s M=%d p_s1=%.2f p_best=%.3f p_second=%.3f "
+            f"{C.posterior}[posterior]{C.r} person=%s M=%d p_s1=%.2f p_best=%.3f p_second=%.3f "
             "p_unk=%.3f j_best=%s face_rank=%d voice_rank=%d H=%.2f",
             person.person_id, M, p_s1, p_best, p_second, p_unk,
             j_best or "-", face_rank, voice_rank, H,

@@ -14,6 +14,7 @@ from typing import List, Optional
 import numpy as np
 
 from .config import BraidConfig
+from .log_style import C
 from .perception import DiarizationCluster, FaceTrack, RawObservations
 
 logger = logging.getLogger("braid")
@@ -99,7 +100,7 @@ def associate(obs: RawObservations, cfg: BraidConfig) -> List[PersonObservation]
 
     Returns person observations in priority order (visible first, then phantom).
     """
-    logger.info("[assoc] ENTER tracks=%d clusters=%d ssl_events=%d",
+    logger.info(f"{C.assoc}[assoc]{C.r} ENTER tracks=%d clusters=%d ssl_events=%d",
                 len(obs.face_tracks), len(obs.diar_clusters),
                 len(obs.ssl_azimuths))
     persons: List[PersonObservation] = []
@@ -139,7 +140,7 @@ def associate(obs: RawObservations, cfg: BraidConfig) -> List[PersonObservation]
             po.diar_delta = linked.delta
             po.cluster_id = linked.cluster_id
             po.mean_asd = _mean_asd_over_cluster(track, linked)
-            logger.info("[assoc] bridged face %s ↔ cluster %s overlap=%.2f",
+            logger.info(f"{C.assoc}[assoc]{C.r} bridged face %s ↔ cluster %s overlap=%.2f",
                         track.track_id, linked.cluster_id, best_overlap)
         persons.append(po)
 
@@ -162,7 +163,7 @@ def associate(obs: RawObservations, cfg: BraidConfig) -> List[PersonObservation]
             cluster_id=k.cluster_id,
         )
         persons.append(po)
-        logger.info("[assoc] phantom from cluster %s az=%s delta=%.2f",
+        logger.info(f"{C.assoc}[assoc]{C.r} phantom from cluster %s az=%s delta=%.2f",
                     k.cluster_id,
                     f"{ssl_az:.2f}" if ssl_az is not None else "None",
                     k.delta)

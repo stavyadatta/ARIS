@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from .config import BraidConfig
+from .log_style import C
 
 logger = logging.getLogger("braid")
 
@@ -112,9 +113,9 @@ class PerceptionEngine:
                 db_dir=str(Path(self.cfg.gallery_dir) / "face_stage"),
                 recognition_threshold=0.55,
             )
-            logger.info("[perception] face recogniser ready")
+            logger.info(f"{C.perception}[perception]{C.r} face recogniser ready")
         except Exception as e:
-            logger.exception("[perception] failed to init face recogniser: %s", e)
+            logger.exception(f"{C.perception}[perception]{C.r} failed to init face recogniser: %s", e)
             self._face_rec = None
         return self._face_rec
 
@@ -124,9 +125,9 @@ class PerceptionEngine:
         try:
             from ..diarization import _Diarization
             self._diar = _Diarization(max_speakers=self.cfg.max_persons)
-            logger.info("[perception] diarization ready")
+            logger.info(f"{C.perception}[perception]{C.r} diarization ready")
         except Exception as e:
-            logger.exception("[perception] diarization unavailable: %s", e)
+            logger.exception(f"{C.perception}[perception]{C.r} diarization unavailable: %s", e)
             self._diar = None
         return self._diar
 
@@ -136,9 +137,9 @@ class PerceptionEngine:
         try:
             from ..speaker_recognition import _SpeakerRecognition
             self._voice = _SpeakerRecognition(model_name="wavlm_ssl")
-            logger.info("[perception] wavlm_ssl voice encoder ready")
+            logger.info(f"{C.perception}[perception]{C.r} wavlm_ssl voice encoder ready")
         except Exception as e:
-            logger.exception("[perception] voice encoder unavailable: %s", e)
+            logger.exception(f"{C.perception}[perception]{C.r} voice encoder unavailable: %s", e)
             self._voice = None
         return self._voice
 
@@ -164,9 +165,9 @@ class PerceptionEngine:
             model.eval()
             self._asd_model = model
             self._asd_available = True
-            logger.info("[perception] Light-ASD ready")
+            logger.info(f"{C.perception}[perception]{C.r} Light-ASD ready")
         except Exception as e:
-            logger.warning("[perception] Light-ASD unavailable (%s); using α=%.2f stub",
+            logger.warning(f"{C.perception}[perception]{C.r} Light-ASD unavailable (%s); using α=%.2f stub",
                            e, self.cfg.asd_stub_default_alpha)
             self._asd_available = False
         return self._asd_model
@@ -186,7 +187,7 @@ class PerceptionEngine:
         ssl_bins, az, conf = self._ssl_pass(bundle)
         self._score_asd_for_tracks(face_tracks, bundle)
         logger.info(
-            "[perception] tick=%d faces=%d clusters=%d ssl_events=%d wall=%.2fs",
+            f"{C.perception}[perception]{C.r} tick=%d faces=%d clusters=%d ssl_events=%d wall=%.2fs",
             bundle.tick_id, len(face_tracks), len(diar_clusters),
             len(bundle.ssl_events), time.time() - t0,
         )
@@ -209,7 +210,7 @@ class PerceptionEngine:
         try:
             import cv2  # noqa: F401
         except Exception as e:
-            logger.error("[perception] cv2 unavailable: %s", e)
+            logger.error(f"{C.perception}[perception]{C.r} cv2 unavailable: %s", e)
             return []
         import cv2
 
@@ -364,7 +365,7 @@ class PerceptionEngine:
             mono = (arr.mean(axis=1)).astype(np.int16)
             return mono.tobytes()
         except Exception as e:
-            logger.warning("[perception] mono downmix failed (%s); using raw bytes", e)
+            logger.warning(f"{C.perception}[perception]{C.r} mono downmix failed (%s); using raw bytes", e)
             return bundle.audio_pcm
 
     def _audio_pass(self, bundle: TickBundle) -> List[DiarizationCluster]:
@@ -377,7 +378,7 @@ class PerceptionEngine:
         try:
             segments = diar.diarize(mono, sample_rate=sr)
         except Exception as e:
-            logger.warning("[perception] diarization failed (%s)", e)
+            logger.warning(f"{C.perception}[perception]{C.r} diarization failed (%s)", e)
             return []
 
         # group segments by speaker label → one cluster each
@@ -397,7 +398,7 @@ class PerceptionEngine:
                 try:
                     emb = voice.extract_embedding(audio_concat, sample_rate=sr)
                 except Exception as e:
-                    logger.warning("[perception] voice embed failed for %s: %s", spk, e)
+                    logger.warning(f"{C.perception}[perception]{C.r} voice embed failed for %s: %s", spk, e)
                     emb = None
             clusters.append(DiarizationCluster(
                 cluster_id=str(spk),
@@ -485,7 +486,7 @@ class PerceptionEngine:
             import cv2  # noqa: F401
             import python_speech_features  # type: ignore
         except Exception as e:
-            logger.warning("[perception] ASD deps missing (%s); keeping stub α", e)
+            logger.warning(f"{C.perception}[perception]{C.r} ASD deps missing (%s); keeping stub α", e)
             return
 
         # Mono 16 kHz int16 → float MFCC.
@@ -511,7 +512,7 @@ class PerceptionEngine:
                 audio, sr, numcep=13, winlen=0.025, winstep=0.010,
             )
         except Exception as e:
-            logger.warning("[perception] MFCC failed (%s); keeping stub α", e)
+            logger.warning(f"{C.perception}[perception]{C.r} MFCC failed (%s); keeping stub α", e)
             return
 
         device = next(model.parameters()).device if hasattr(model, "parameters") else None
@@ -587,8 +588,8 @@ class PerceptionEngine:
                 alpha = 1.0 / (1.0 + np.exp(-mean_raw))
                 ft.asd_scores = [float(x) for x in alpha.tolist()]
             except Exception as e:
-                logger.warning("[perception] Light-ASD forward failed on %s (%s); "
+                logger.warning(f"{C.perception}[perception]{C.r} Light-ASD forward failed on %s (%s); "
                                "keeping stub α for this track", ft.track_id, e)
                 continue
 
-        logger.info("[perception] ASD scored %d tracks", len(tracks))
+        logger.info(f"{C.perception}[perception]{C.r} ASD scored %d tracks", len(tracks))

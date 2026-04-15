@@ -20,6 +20,7 @@ import numpy as np
 
 from .association import PersonObservation
 from .config import BraidConfig
+from .log_style import C
 from .posterior import IdentityPosterior
 
 logger = logging.getLogger("braid")
@@ -66,7 +67,7 @@ def reassociate(
     Cosine > cfg.reassoc_face_cos on face, else > cfg.reassoc_voice_cos on voice.
     Greedy best-match; memories are consumed at most once per tick.
     """
-    logger.info("[temporal] ENTER reassoc: %d incoming persons vs %d memories",
+    logger.info(f"{C.temporal}[temporal]{C.r} ENTER reassoc: %d incoming persons vs %d memories",
                 len(persons), len(state.memories))
     claimed: set = set()
     pairs: List[Tuple[PersonObservation, Optional[PersonMemory]]] = []
@@ -85,7 +86,7 @@ def reassociate(
                 best_mem = mem
         if best_mem is not None:
             claimed.add(best_mem.stable_id)
-            logger.info("[temporal] reassoc %s → %s score=%.2f",
+            logger.info(f"{C.temporal}[temporal]{C.r} reassoc %s → %s score=%.2f",
                         po.person_id, best_mem.stable_id, best_score)
         pairs.append((po, best_mem))
     return pairs

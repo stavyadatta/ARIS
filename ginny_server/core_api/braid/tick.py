@@ -19,6 +19,7 @@ from .association import PersonObservation, associate
 from .config import BraidConfig
 from .decision import BraidDecision, DecisionState, decide
 from .gallery import BraidGallery
+from .log_style import C, state_color
 from .perception import PerceptionEngine, TickBundle
 from .posterior import IdentityPosterior, PosteriorComputer
 from .temporal import (
@@ -58,37 +59,37 @@ def run_tick(
     cfg: BraidConfig,
 ) -> BraidTickResult:
     t0 = time.time()
-    logger.info("========== [tick] START tick=%d session=%s heading=%.2frad "
-                "prior_memories=%d gallery=%d ==========",
+    logger.info(f"{C.tick}{C.bold}========== [tick] START tick=%d session=%s "
+                f"heading=%.2frad prior_memories=%d gallery=%d =========={C.r}",
                 bundle.tick_id, bundle.session_id, bundle.robot_heading_rad,
                 len(session_state.memories), len(gallery.entries()))
 
     # 1. Perception.
-    logger.info("[tick] phase=1 perception — running face/ASD/diar/voice/SSL pipelines")
+    logger.info(f"{C.tick}[tick]{C.r} phase=1 perception — running face/ASD/diar/voice/SSL pipelines")
     t_p = time.time()
     obs = engine.run(bundle)
-    logger.info("[tick] perception done in %.2fs: face_tracks=%d diar_clusters=%d "
+    logger.info(f"{C.tick}[tick]{C.r} perception done in %.2fs: face_tracks=%d diar_clusters=%d "
                 "ssl_events=%d",
                 time.time() - t_p, len(obs.face_tracks),
                 len(obs.diar_clusters), len(obs.ssl_azimuths))
 
     # 2. Audio-visual association (+ phantoms).
-    logger.info("[tick] phase=2 association — bridging faces↔clusters (tau_bridge=%.2f)",
+    logger.info(f"{C.tick}[tick]{C.r} phase=2 association — bridging faces↔clusters (tau_bridge=%.2f)",
                 cfg.tau_bridge)
     persons = associate(obs, cfg)
     vis = sum(1 for p in persons if p.visible)
-    logger.info("[tick] association done: persons=%d (visible=%d phantom=%d)",
+    logger.info(f"{C.tick}[tick]{C.r} association done: persons=%d (visible=%d phantom=%d)",
                 len(persons), vis, len(persons) - vis)
 
     # 3. Temporal re-association with prior memory.
-    logger.info("[tick] phase=3 temporal reassoc — face_cos>%.2f or voice_cos>%.2f",
+    logger.info(f"{C.tick}[tick]{C.r} phase=3 temporal reassoc — face_cos>%.2f or voice_cos>%.2f",
                 cfg.reassoc_face_cos, cfg.reassoc_voice_cos)
     pairs = reassociate(session_state, persons, cfg)
     matched = sum(1 for _, m in pairs if m is not None)
-    logger.info("[tick] reassoc done: matched=%d new=%d", matched, len(pairs) - matched)
+    logger.info(f"{C.tick}[tick]{C.r} reassoc done: matched=%d new=%d", matched, len(pairs) - matched)
 
     # 4. Posterior + decision per person.
-    logger.info("[tick] phase=4 posterior+decision — gallery size M=%d",
+    logger.info(f"{C.tick}[tick]{C.r} phase=4 posterior+decision — gallery size M=%d",
                 len(gallery.entries()))
     computer = PosteriorComputer(cfg)
     results: List[PersonTickResult] = []
@@ -106,7 +107,7 @@ def run_tick(
         prev_state = prev_mem.last_state if prev_mem else "NEW"
 
         logger.info(
-            "[tick] person=%s posterior: p_best=%.3f p_unk=%.3f margin=%.3f "
+            f"{C.tick}[tick]{C.r} person=%s posterior: p_best=%.3f p_unk=%.3f margin=%.3f "
             "H=%.2f Q_gate=%.2f j_best=%s mod_agree=%s",
             po.person_id, post.p_best, post.p_unk, post.margin, post.entropy,
             post.Q_gate, post.j_best or "-", post.modality_agreement,
@@ -114,7 +115,7 @@ def run_tick(
 
         # 5. Gallery writes.
         if dec.state == DecisionState.ENROL:
-            logger.info("[tick] phase=5 gallery ENROL for person=%s", po.person_id)
+            logger.info(f"{C.tick}[tick]{C.r} phase=5 gallery ENROL for person=%s", po.person_id)
             gallery.enrol(
                 face_emb=po.face_emb,
                 voice_emb=po.voice_emb,
@@ -122,7 +123,7 @@ def run_tick(
                 representative_image=po.representative_image,
             )
         elif dec.state == DecisionState.RECOGNISE and dec.identity:
-            logger.info("[tick] phase=5 gallery UPDATE_EMA person=%s identity=%s α=%.2f",
+            logger.info(f"{C.tick}[tick]{C.r} phase=5 gallery UPDATE_EMA person=%s identity=%s α=%.2f",
                         po.person_id, dec.identity, cfg.gallery_ema_alpha)
             gallery.update_ema(
                 dec.identity,
@@ -142,23 +143,24 @@ def run_tick(
         ))
 
         # 7. Structured per-person log line (spec requirement).
+        sc = state_color(dec.state.value)
         logger.info(
-            "person=%s decision=%s→%s p_best=%.2f p_unk=%.2f margin=%.2f "
-            "Q_gate=%.2f H=%.2f mod_agree=%s identity=%s reason=%s",
+            f"{C.bold}person=%s{C.r} decision=%s→{sc}%s{C.r} p_best=%.2f p_unk=%.2f "
+            "margin=%.2f Q_gate=%.2f H=%.2f mod_agree=%s identity=%s reason=%s",
             sid, prev_state, dec.state.value, post.p_best, post.p_unk,
             post.margin, post.Q_gate, post.entropy, post.modality_agreement,
             dec.identity or "-", dec.reason,
         )
 
     # 8. Action selection.
-    logger.info("[tick] phase=6 action_policy — %d persons considered", len(results))
+    logger.info(f"{C.tick}[tick]{C.r} phase=6 action_policy — %d persons considered", len(results))
     action = select_action(
         [(r.observation, r.posterior, r.decision) for r in results],
         robot_heading_rad=bundle.robot_heading_rad,
         cfg=cfg,
     )
     logger.info(
-        "action=%s magnitude=%.2f%s reason=%s target_person=%s",
+        f"{C.action}action=%s{C.r} magnitude=%.2f%s reason=%s target_person=%s",
         action.type.lower(),
         math.degrees(action.magnitude) if action.type.startswith("ROTATE")
         else action.magnitude,
@@ -169,8 +171,8 @@ def run_tick(
     session_state.last_heading_rad = bundle.robot_heading_rad
     session_state.last_tick_id = bundle.tick_id
 
-    logger.info("========== [tick] END tick=%d wall=%.2fs persons=%d "
-                "action=%s ==========",
+    logger.info(f"{C.tick}{C.bold}========== [tick] END tick=%d wall=%.2fs "
+                f"persons=%d action=%s =========={C.r}",
                 bundle.tick_id, time.time() - t0, len(results), action.type)
 
     return BraidTickResult(

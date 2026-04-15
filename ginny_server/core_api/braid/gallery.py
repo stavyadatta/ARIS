@@ -23,6 +23,8 @@ from typing import Iterable, List, Optional
 
 import numpy as np
 
+from .log_style import C
+
 logger = logging.getLogger("braid")
 
 
@@ -74,8 +76,8 @@ class BraidGallery:
                     voice_count=int(meta.get("voice_count", 1)),
                 ))
             except Exception as e:
-                logger.warning("[gallery] failed to load %s: %s", meta_path, e)
-        logger.info("[gallery] loaded %d entries from %s",
+                logger.warning(f"{C.gallery}[gallery]{C.r} failed to load %s: %s", meta_path, e)
+        logger.info(f"{C.gallery}[gallery]{C.r} loaded %d entries from %s",
                     len(self._entries), self.db_dir)
 
     def _write_entry(self, e: GalleryEntry):
@@ -153,7 +155,7 @@ class BraidGallery:
             modalities = []
             if face_emb is not None: modalities.append("face")
             if voice_emb is not None: modalities.append("voice")
-            logger.info("[gallery] ENROL person_id=%s modalities=%s quality=%.2f",
+            logger.info(f"{C.gallery}[gallery]{C.r} ENROL person_id=%s modalities=%s quality=%.2f",
                         pid, "+".join(modalities) or "none", face_quality)
         return e
 
@@ -191,6 +193,6 @@ class BraidGallery:
             modalities = []
             if face_emb is not None: modalities.append("face")
             if voice_emb is not None: modalities.append("voice")
-            logger.info("[gallery] UPDATE person_id=%s modalities=%s alpha=%.2f",
+            logger.info(f"{C.gallery}[gallery]{C.r} UPDATE person_id=%s modalities=%s alpha=%.2f",
                         person_id, "+".join(modalities) or "none", alpha)
             return entry

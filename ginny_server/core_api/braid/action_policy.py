@@ -14,6 +14,7 @@ from typing import List, Optional, Tuple
 from .association import PersonObservation
 from .config import BraidConfig
 from .decision import BraidDecision, DecisionState
+from .log_style import C
 from .posterior import IdentityPosterior
 
 logger = logging.getLogger("braid")
@@ -39,10 +40,10 @@ def select_action(
     """Pick the single action for this tick."""
     candidates = [p for p in persons
                   if p[2].state in (DecisionState.EXPLORE, DecisionState.CONFIRM)]
-    logger.info("[action] %d/%d persons need attention (EXPLORE/CONFIRM)",
+    logger.info(f"{C.action}[action]{C.r} %d/%d persons need attention (EXPLORE/CONFIRM)",
                 len(candidates), len(persons))
     if not candidates:
-        logger.info("[action] no candidates → STAY(all_resolved)")
+        logger.info(f"{C.action}[action]{C.r} no candidates → STAY(all_resolved)")
         return BraidAction("STAY", 0.0, "all_resolved", "")
 
     # Greedy: highest entropy (uncertainty). Tiebreak: smaller |azimuth|.
@@ -53,7 +54,7 @@ def select_action(
 
     candidates.sort(key=_key)
     person, post, dec = candidates[0]
-    logger.info("[action] selected target=%s state=%s reason=%s H=%.2f",
+    logger.info(f"{C.action}[action]{C.r} selected target=%s state=%s reason=%s H=%.2f",
                 person.person_id, dec.state.value, dec.reason, post.entropy)
 
     if dec.state == DecisionState.EXPLORE:
