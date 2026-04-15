@@ -1,17 +1,26 @@
 """Capture one 30s BRAID bundle from Pepper.
 
 Coordinates:
-  * ``AudioManager2`` (pepper_api.audio) — 4-ch 16 kHz PCM.
-  * ``ALVideoDevice`` (pepper_api.camera wrapper) — RGB frames.
-  * ``SoundLocalizer`` (sound_system.sound_localisation) — azimuth / conf stream
-    via ALMemory["ALSoundLocalization/SoundLocated"].
+  * ``ALAudioDevice`` (4-ch 16 kHz PCM) via a qi-registered service with a
+    ``processRemote`` callback. The service **must** be registered on the
+    qi session (see ``pepper_client/speaker_client.py::PepperAudioCapture``
+    and ``pepper_client/pepper_middleware/pepper.py`` for the canonical
+    pattern).
+  * ``ALVideoDevice`` — RGB frames pulled via ``getImageRemote``.
+  * ``ALSoundLocalization`` — azimuth / confidence stream via
+    ``ALMemory['ALSoundLocalization/SoundLocated']``.
 
-This module is deliberately **dependency-light**: it assumes ``qi`` is
-available on the client machine. It never imports the BRAID server modules.
+Usage:
+
+    capture = BundleCapture(session, listen_ip="192.168.0.50", listen_port=52100)
+    bundle  = capture.run(tick_id=..., session_id=..., duration_seconds=30.0,
+                          robot_heading_rad=...)
+
+``session.listen`` + ``session.registerService`` are called exactly once at
+construction; the audio collector is re-used across ticks.
 """
 from __future__ import annotations
 
-import io
 import logging
 import threading
 import time
@@ -36,17 +45,62 @@ class ClientBundle:
     ssl_events: List[Tuple[float, float, float, float]] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# qi-registered audio collector. Mirrors the PepperAudioCapture pattern from
+# speaker_client.py. This MUST be a top-level class (not a nested one) so
+# qi's service introspection can bind its methods.
+# ---------------------------------------------------------------------------
+class BraidAudioCapture(object):
+    """qi service: receives audio via ``processRemote``."""
+
+    def __init__(self, sample_rate=16000, channels=4):
+        self.module_name = "BraidAudioCapture"
+        self.sample_rate = int(sample_rate)
+        self.channels = int(channels)
+        self.audio_service = None
+        self._buf = bytearray()
+        self._lock = threading.Lock()
+        self._active = False
+
+    def init_service(self, session):
+        self.audio_service = session.service("ALAudioDevice")
+
+    def start(self):
+        with self._lock:
+            self._buf = bytearray()
+        self._active = True
+        # Pepper's ALAudioDevice: setClientPreferences(name, sr, channel_cfg, deinterleaved)
+        # channel_cfg: 0=all 4 channels interleaved, 1..4=single mic, 5=front
+        self.audio_service.setClientPreferences(
+            self.module_name, self.sample_rate, 0, 0  # 0=all-4-channels interleaved
+        )
+        self.audio_service.subscribe(self.module_name)
+
+    def stop(self):
+        self._active = False
+        try:
+            self.audio_service.unsubscribe(self.module_name)
+        except Exception as e:
+            logger.warning("[capture] audio unsubscribe failed: %s", e)
+
+    def drain(self) -> bytes:
+        with self._lock:
+            data = bytes(self._buf)
+            self._buf = bytearray()
+        return data
+
+    # Called by NAOqi:
+    def processRemote(self, nbOfChannels, nbOfSamplesByChannel, timeStamp, inputBuffer):
+        if not self._active:
+            return
+        with self._lock:
+            self._buf.extend(bytes(inputBuffer))
+
+
 class BundleCapture:
-    """30-second synchronous capture.
-
-    Usage:
-        capture = BundleCapture(session, sample_rate=16000, channels=4,
-                                camera_resolution=2, camera_fps=10)
-        bundle = capture.run(tick_id=3, session_id="sess1",
-                             duration_seconds=30.0, robot_heading_rad=heading)
-    """
-
     def __init__(self, session,
+                 listen_ip: str = "0.0.0.0",
+                 listen_port: int = 52100,
                  sample_rate: int = 16000,
                  channels: int = 4,
                  camera_resolution: int = 2,
@@ -59,9 +113,7 @@ class BundleCapture:
         self.camera_colorspace = camera_colorspace
         self.camera_fps = camera_fps
 
-        # ---- services (lazy errors so a missing one doesn't crash import) ----
-        self._motion = session.service("ALMotion")
-        self._audio_service = session.service("ALAudioDevice")
+        # ---- services ----------------------------------------------------
         self._video = session.service("ALVideoDevice")
         self._memory = session.service("ALMemory")
         self._ssl = session.service("ALSoundLocalization")
@@ -69,10 +121,29 @@ class BundleCapture:
         self._video_client: Optional[str] = None
         self._ssl_subscribed = False
 
-    # ---------- subscription helpers ----------
+        # ---- audio collector: register ONCE per session ------------------
+        self._audio_collector = BraidAudioCapture(
+            sample_rate=sample_rate, channels=channels,
+        )
+        listen_url = f"tcp://{listen_ip}:{listen_port}"
+        try:
+            self.session.listen(listen_url)
+        except Exception as e:
+            logger.warning("[capture] session.listen(%s) failed (possibly already listening): %s",
+                           listen_url, e)
+        try:
+            self.session.registerService(
+                self._audio_collector.module_name, self._audio_collector,
+            )
+            logger.info("[capture] registered qi service '%s' (listen=%s)",
+                        self._audio_collector.module_name, listen_url)
+        except Exception as e:
+            # Already registered from a previous run of the same process is fine.
+            logger.warning("[capture] registerService failed (continuing): %s", e)
+        self._audio_collector.init_service(self.session)
 
+    # ---------- subscription helpers ----------
     def _subscribe_camera(self):
-        # Top camera (0), resolution, colorspace, fps
         try:
             self._video_client = self._video.subscribeCamera(
                 "braid_cam", 0, self.camera_resolution,
@@ -113,7 +184,6 @@ class BundleCapture:
             self._ssl_subscribed = False
 
     # ---------- drainers ----------
-
     def _camera_loop(self, out_frames, stop_flag, t0):
         import numpy as np
         try:
@@ -141,7 +211,6 @@ class BundleCapture:
                 if cv2 is None:
                     continue
                 arr = np.frombuffer(bytes(raw), dtype=np.uint8).reshape(h, w, 3)
-                # qi RGB → cv2 BGR (what InsightFace expects)
                 bgr = arr[:, :, ::-1].copy()
                 ok, jpg = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                 if ok:
@@ -162,51 +231,7 @@ class BundleCapture:
                 pass
             time.sleep(0.1)
 
-    def _audio_loop(self, out_buf, stop_flag, duration_seconds):
-        """Simple blocking recorder using the same AudioManager pattern as
-        speaker_client: subscribe ALAudioDevice with our preferences and drain
-        processRemote callbacks until duration elapses.
-
-        We keep this self-contained by driving the subscription from a small
-        inner class that captures raw interleaved bytes.
-        """
-        sr = self.sample_rate
-        ch = self.channels
-        target_bytes = int(sr * ch * 2 * duration_seconds)  # int16 == 2B
-
-        class _Collector(object):
-            def __init__(self):
-                self.buf = bytearray()
-                self.done = False
-            def processRemote(self, nbOfChannels, nbOfSamplesByChannel,
-                              timeStamp, inputBuffer):
-                if self.done:
-                    return
-                self.buf.extend(bytes(inputBuffer))
-                if len(self.buf) >= target_bytes:
-                    self.done = True
-
-        collector = _Collector()
-        name = "BraidAudioCapture"
-        try:
-            # Pepper's ALAudioDevice supports 1ch (front) and 4ch (all mics);
-            # channels=4 preferred for SSL-compatible raw audio.
-            self._audio_service.setClientPreferences(name, sr, ch, 0)
-            self._audio_service.subscribe(name)
-            t_end = time.time() + duration_seconds + 2.0
-            while time.time() < t_end and not collector.done and not stop_flag["stop"]:
-                time.sleep(0.05)
-        except Exception as e:
-            logger.exception("[capture] audio subscribe failed: %s", e)
-        finally:
-            try:
-                self._audio_service.unsubscribe(name)
-            except Exception:
-                pass
-        out_buf.extend(collector.buf)
-
     # ---------- public ----------
-
     def run(self, tick_id: int, session_id: str,
             duration_seconds: float, robot_heading_rad: float) -> ClientBundle:
         logger.info("[capture] BEGIN tick=%d duration=%.1fs sr=%d ch=%d fps=%d",
@@ -214,34 +239,38 @@ class BundleCapture:
                     self.channels, self.camera_fps)
         self._subscribe_camera()
         self._subscribe_ssl()
+        self._audio_collector.start()
         logger.info("[capture] subscribed camera+ssl+audio; capturing…")
         try:
             t0 = time.time()
             stop_flag = {"stop": False}
             frames: List[Tuple[float, bytes, int, int]] = []
             ssl_events: List[Tuple[float, float, float, float]] = []
-            audio_buf = bytearray()
 
             thr_cam = threading.Thread(target=self._camera_loop,
                                        args=(frames, stop_flag, t0), daemon=True)
             thr_ssl = threading.Thread(target=self._ssl_loop,
                                        args=(ssl_events, stop_flag), daemon=True)
-            thr_audio = threading.Thread(target=self._audio_loop,
-                                         args=(audio_buf, stop_flag, duration_seconds),
-                                         daemon=True)
-            thr_cam.start(); thr_ssl.start(); thr_audio.start()
+            thr_cam.start(); thr_ssl.start()
 
-            thr_audio.join(timeout=duration_seconds + 5.0)
+            t_end = t0 + duration_seconds
+            while time.time() < t_end:
+                time.sleep(0.1)
+
             stop_flag["stop"] = True
             thr_cam.join(timeout=2.0)
             thr_ssl.join(timeout=2.0)
+
+            # Stop audio and drain. stop() unsubscribes; drain() returns bytes.
+            self._audio_collector.stop()
+            audio_pcm = self._audio_collector.drain()
 
             bundle = ClientBundle(
                 tick_id=tick_id,
                 session_id=session_id,
                 window_start_ts=t0,
                 robot_heading_rad=float(robot_heading_rad),
-                audio_pcm=bytes(audio_buf),
+                audio_pcm=audio_pcm,
                 audio_sample_rate=self.sample_rate,
                 audio_channels=self.channels,
                 frames=frames,

@@ -21,6 +21,8 @@ python -m pepper_client.braid.braid_client \
     --robot-ip 192.168.0.52 \
     --robot-port 9559 \
     --server 172.27.72.27:50051 \
+    --listen-ip 192.168.0.50 \
+    --listen-port 52100 \
     --tick-seconds 30 \
     --num-ticks 0 \
     --log-level INFO \

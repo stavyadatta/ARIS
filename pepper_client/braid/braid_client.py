@@ -103,11 +103,15 @@ def _chunk_iter(bundle: ClientBundle) -> Iterator[pb2.BraidTickChunk]:
 
 class BraidClient:
     def __init__(self, session, server: str, session_id: str,
-                 tick_seconds: float = 30.0):
+                 tick_seconds: float = 30.0,
+                 listen_ip: str = "192.168.0.50",
+                 listen_port: int = 52100):
         self.session = session
         self.channel = grpc.insecure_channel(server)
         self.stub = pb2_grpc.BraidServiceStub(self.channel)
-        self.capture = BundleCapture(session)
+        self.capture = BundleCapture(session,
+                                     listen_ip=listen_ip,
+                                     listen_port=listen_port)
         self.action = ActionExecutor(session)
         self.session_id = session_id
         self.tick_seconds = tick_seconds
@@ -170,6 +174,11 @@ def _parse_args():
     p.add_argument("--session-id", type=str, default=None,
                    help="Optional session id (uuid4 by default).")
     p.add_argument("--tick-seconds", type=float, default=30.0)
+    p.add_argument("--listen-ip", type=str, default="192.168.0.50",
+                   help="Local IP Pepper can reach back to (for "
+                        "session.listen/registerService of the audio service).")
+    p.add_argument("--listen-port", type=int, default=52100,
+                   help="Local TCP port for qi session.listen.")
     p.add_argument("--num-ticks", type=int, default=0,
                    help="0 = run forever.")
     p.add_argument("--log-level", type=str, default="INFO")
@@ -191,7 +200,9 @@ def main():
 
     client = BraidClient(session=session, server=args.server,
                          session_id=session_id,
-                         tick_seconds=float(args.tick_seconds))
+                         tick_seconds=float(args.tick_seconds),
+                         listen_ip=args.listen_ip,
+                         listen_port=int(args.listen_port))
     logger.info("BRAID client connected to server=%s robot=%s session=%s",
                 args.server, url, session_id)
     client.run_forever(num_ticks=args.num_ticks)

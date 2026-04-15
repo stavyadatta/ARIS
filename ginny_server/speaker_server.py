@@ -38,7 +38,6 @@ import logging
 import datetime
 from concurrent import futures
 
-from speaker_service import SpeakerRecognitionManager
 import grpc_communication.grpc_pb2_grpc as pb2_grpc
 
 
@@ -112,11 +111,11 @@ def serve(port=50051, max_workers=10, model="eres2netv2", braid=False):
    SPEAKER + FACE RECOGNITION SERVER
 {'=' * 60}{RESET}
 
-{BOLD}  Pipeline:{RESET}
+{BOLD}  Pipeline:{RESET} {('[BRAID-exclusive]' if braid else '[speaker+face]')}
     Face    InsightFace buffalo_l     {DIM}cuda:0{RESET}
     Voice   {model_label:<25}{DIM}cuda:1{RESET}
     Diar    DiariZen v2 (4-spk)       {DIM}cuda:2{RESET}
-    BRAID   {'ENABLED' if braid else 'disabled':<25}{DIM}--braid{RESET}
+    BRAID   {'ENABLED (exclusive)' if braid else 'disabled':<25}{DIM}--braid{RESET}
 
 {BOLD}  Storage:{RESET}
     Faces   /workspace/database/face_db/
@@ -126,19 +125,23 @@ def serve(port=50051, max_workers=10, model="eres2netv2", braid=False):
 {DIM}  Loading models...{RESET}
 """)
 
-    pb2_grpc.add_SpeakerRecognitionServiceServicer_to_server(
-        SpeakerRecognitionManager(),
-        server
-    )
-
     if braid:
-        # Lazy import: heavy BRAID deps only load when the flag is set.
+        # BRAID-exclusive mode: only BraidService is registered. The existing
+        # SpeakerRecognitionService is *not* started in this mode to avoid
+        # loading duplicate face/voice/diar models.
         from core_api.braid.grpc_handle import BraidServiceServicer
         pb2_grpc.add_BraidServiceServicer_to_server(
             BraidServiceServicer(),
             server,
         )
-        logger.info(f"{GREEN}BraidService registered alongside SpeakerRecognitionService (--braid).{RESET}")
+        logger.info(f"{GREEN}BRAID-exclusive mode: only BraidService registered "
+                    f"(SpeakerRecognitionService disabled).{RESET}")
+    else:
+        from speaker_service import SpeakerRecognitionManager
+        pb2_grpc.add_SpeakerRecognitionServiceServicer_to_server(
+            SpeakerRecognitionManager(),
+            server
+        )
 
     server.add_insecure_port(f"[::]:{port}")
 
