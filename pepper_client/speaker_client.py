@@ -730,6 +730,7 @@ class SpeakerClient:
         _energy_threshold = 370
         _max_silence = 20
         _min_segment = 2.0
+        _max_segment = 30.0  # force-send after 30s of continuous speech
         _client_ref = self  # reference for the callback
         _wake_word_triggered = [False]  # movement only when wake word detected
         _wake_word_time = [0.0]         # when wake word was last detected
@@ -827,6 +828,28 @@ class SpeakerClient:
                     # Write audio bytes to buffer
                     with _audio_lock:
                         _audio_buffer.write(inputBuffer)
+
+                    # ---- 30s max-duration guard: force-send if speech runs too long ----
+                    speech_duration = current_time - _speech_start[0]
+                    if speech_duration >= _max_segment:
+                        with _audio_lock:
+                            _audio_buffer.seek(0)
+                            audio_bytes = _audio_buffer.read()
+                            _audio_buffer.seek(0)
+                            _audio_buffer.truncate(0)
+
+                        duration = (len(audio_bytes) // 2) / 16000.0
+                        if duration >= _min_segment:
+                            logger.info(
+                                f"  {DIM}{_ts()}{RESET}  {YELLOW}>> MAX 30s{RESET}     "
+                                f"force-sending {duration:.2f}s audio (hit {_max_segment:.0f}s limit)"
+                            )
+                            _client_ref._send_segment(
+                                audio_bytes, _speech_start[0], duration
+                            )
+                        # Reset speech start for the next window (stay in speech state)
+                        _speech_start[0] = current_time
+                        _direction_samples.clear()
 
                     # Wake word detection via Vosk (runs on every audio chunk)
                     if _vosk_recognizer is not None:

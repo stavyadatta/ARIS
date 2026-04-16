@@ -99,9 +99,10 @@ MODEL_DISPLAY = {
 }
 
 
-def serve(port=50051, max_workers=10, model="eres2netv2", braid=False):
+def serve(port=50051, max_workers=10, model="eres2netv2", braid=False, no_asd=False):
     # Set env var so core_api/__init__.py picks up the model choice
     os.environ["SPEAKER_MODEL"] = model
+    os.environ["SPEAKER_DISABLE_ASD"] = "1" if no_asd else "0"
     model_label, model_dir = MODEL_DISPLAY[model]
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
@@ -171,5 +172,8 @@ if __name__ == "__main__":
     parser.add_argument("--braid", action="store_true",
                         help="Also register BraidService (BRAID closed-loop "
                              "perception/decision/action pipeline).")
+    parser.add_argument("--no-asd", action="store_true",
+                        help="Disable Active Speaker Detection face-bbox overlay "
+                             "(applies to both ProcessVideo and RecognizeSpeakers).")
     args = parser.parse_args()
-    serve(port=args.port, model=args.model, braid=args.braid)
+    serve(port=args.port, model=args.model, braid=args.braid, no_asd=args.no_asd)

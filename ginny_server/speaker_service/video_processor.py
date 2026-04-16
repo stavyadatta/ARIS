@@ -71,7 +71,7 @@ def _annotate_chunk(args):
     Receives precomputed per-frame voice/diar entries (no timeline scans).
     """
     (src_path, start_frame, end_frame, fps, frame_w, frame_h,
-     voice_slice, diar_slice, num_diar_speakers,
+     voice_slice, diar_slice, face_slice, num_diar_speakers,
      summary_text, summary_until_frame, out_path) = args
 
     # Each worker is single-threaded; we parallelize at the process level.
@@ -104,6 +104,14 @@ def _annotate_chunk(args):
         ret, frame = cap.read()
         if not ret:
             break
+
+        # ---- ASD: face bboxes (thin gray default, thick green when speaking, no text) ----
+        if face_slice is not None:
+            for (x1, y1, x2, y2, is_speaking) in face_slice[i]:
+                if is_speaking:
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                else:
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (120, 120, 120), 1)
 
         # ---- VOICE: bottom bar (same look as original) ----
         v_entry = voice_slice[i]
@@ -400,6 +408,75 @@ def process_video(video_path, max_duration, speaker_recognition, diarization):
     num_voices = len(voice_color_map)
     logger.info(f"  {DIM}{_ts()}{RESET}  {GREEN}OK PIPELINE{RESET}    {num_diar_speakers} diar speakers, {num_voices} enrolled voices")
 
+    # ===================== ACTIVE SPEAKER DETECTION =====================
+    # Run /workspace/asd_pipeline.py (S3FD detect + IOU track + Light-ASD score)
+    # to get per-face bounding boxes + speaking flags. Aligned to native video fps.
+    face_per_frame = [[] for _ in range(total_frames)]
+    _asd_disabled = os.environ.get("SPEAKER_DISABLE_ASD", "0") == "1"
+    if _asd_disabled:
+        logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}-- ASD         disabled via --no-asd{RESET}")
+    else:
+        try:
+            import sys as _sys
+            import shutil as _shutil
+            if "/workspace" not in _sys.path:
+                _sys.path.insert(0, "/workspace")
+            import asd_pipeline as _asd
+
+            yield "Running ASD pipeline...", None
+            asd_work = tempfile.mkdtemp(prefix="asd_proc_")
+            asd_frames_dir = os.path.join(asd_work, "frames")
+            asd_crop_dir = os.path.join(asd_work, "crops")
+            os.makedirs(asd_frames_dir, exist_ok=True)
+            os.makedirs(asd_crop_dir, exist_ok=True)
+
+            try:
+                v_out, a_out = _asd.extract_media(working_video, asd_work, duration=0)
+                _asd.extract_frames(v_out, asd_frames_dir)
+                face_dets = _asd.detect_faces(asd_frames_dir, device="cuda")
+                tracks = _asd.track_faces(face_dets)
+
+                if tracks:
+                    vid_tracks = _asd.crop_tracks(tracks, asd_frames_dir, asd_crop_dir, a_out)
+                    asd_scores = _asd.run_asd_scoring(asd_crop_dir)
+
+                    ASD_FPS = float(_asd.VIDEO_FPS)  # 25
+                    for tidx, tinfo in enumerate(vid_tracks):
+                        trk = tinfo["track"]
+                        scores = asd_scores[tidx] if tidx < len(asd_scores) else np.array([0.0])
+                        for fi, frame_25 in enumerate(trk["frame"]):
+                            lo = max(fi - 2, 0)
+                            hi = min(fi + 3, len(scores))
+                            s = float(np.mean(scores[lo:hi])) if hi > lo else 0.0
+                            is_spk = s > _asd.ASD_SPEAKING_THRESH
+                            x1, y1, x2, y2 = trk["bbox"][fi]
+                            bbox_entry = (int(x1), int(y1), int(x2), int(y2), is_spk)
+                            # Map 25fps frame range to native-fps frame range
+                            t0 = int(frame_25) / ASD_FPS
+                            t1 = (int(frame_25) + 1) / ASD_FPS
+                            nf0 = max(0, int(t0 * video_fps))
+                            nf1 = min(total_frames, int(t1 * video_fps) + 1)
+                            for nf in range(nf0, nf1):
+                                face_per_frame[nf].append(bbox_entry)
+
+                    total_face_instances = sum(len(v) for v in face_per_frame)
+                    logger.info(
+                        f"  {DIM}{_ts()}{RESET}  {GREEN}OK ASD{RESET}         "
+                        f"{len(vid_tracks)} tracks, {total_face_instances} per-frame bboxes"
+                    )
+                else:
+                    logger.info(f"  {DIM}{_ts()}{RESET}  {DIM}-- ASD         No face tracks found{RESET}")
+            finally:
+                _shutil.rmtree(asd_work, ignore_errors=True)
+        except Exception as _asd_e:
+            logger.warning(
+                f"  {DIM}{_ts()}{RESET}  {YELLOW}!! ASD{RESET}         "
+                f"pipeline failed: {_asd_e}  (rendering without bboxes)"
+            )
+            import traceback as _tb
+            _tb.print_exc()
+            face_per_frame = [[] for _ in range(total_frames)]
+
     # ===================== ANNOTATE VIDEO (PARALLEL) =====================
     # Strategy:
     #   1. Resolve all colors NOW (main thread) so workers don't mutate
@@ -471,6 +548,7 @@ def process_video(video_path, max_duration, speaker_recognition, diarization):
             working_video, f_start, f_end, video_fps, frame_w, frame_h,
             voice_per_frame[f_start:f_end],
             diar_per_frame[f_start:f_end],
+            face_per_frame[f_start:f_end],
             num_diar_speakers,
             summary_text,
             summary_until_frame,

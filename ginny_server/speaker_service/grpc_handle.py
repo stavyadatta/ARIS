@@ -83,14 +83,58 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
             _log("!!", "FACE ERROR", str(e), _RED)
             return None
 
+    def _compute_asd_faces(self, raw_video_path, wav_path, work_dir):
+        """Run the /workspace/asd_pipeline.py helpers over a raw session
+        video and return (faces_per_frame_dict, frames_dir, asd_fps).
+
+        faces_per_frame maps 25fps-frame-index → [{bbox:(x1,y1,x2,y2),
+        score:float, is_speaking:bool}, ...]. On failure, raises.
+        """
+        import os, sys, glob
+        if "/workspace" not in sys.path:
+            sys.path.insert(0, "/workspace")
+        import asd_pipeline as _asd
+
+        asd_work = os.path.join(work_dir, "asd")
+        frames_dir = os.path.join(asd_work, "frames")
+        crop_dir = os.path.join(asd_work, "crops")
+        os.makedirs(frames_dir, exist_ok=True)
+        os.makedirs(crop_dir, exist_ok=True)
+
+        v_out, a_out = _asd.extract_media(raw_video_path, asd_work, duration=0)
+        _asd.extract_frames(v_out, frames_dir)
+        face_dets = _asd.detect_faces(frames_dir, device="cuda")
+        tracks = _asd.track_faces(face_dets)
+
+        faces_per_frame = {}
+        if tracks:
+            vid_tracks = _asd.crop_tracks(tracks, frames_dir, crop_dir, a_out)
+            asd_scores = _asd.run_asd_scoring(crop_dir)
+            for tidx, tinfo in enumerate(vid_tracks):
+                trk = tinfo["track"]
+                scores = asd_scores[tidx] if tidx < len(asd_scores) else np.array([0.0])
+                for fi, frame_idx in enumerate(trk["frame"]):
+                    lo = max(fi - 2, 0)
+                    hi = min(fi + 3, len(scores))
+                    s = float(np.mean(scores[lo:hi])) if hi > lo else 0.0
+                    x1, y1, x2, y2 = trk["bbox"][fi]
+                    faces_per_frame.setdefault(int(frame_idx), []).append({
+                        "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                        "score": s,
+                        "is_speaking": s > _asd.ASD_SPEAKING_THRESH,
+                    })
+        return faces_per_frame, frames_dir, _asd.VIDEO_FPS
+
     def _render_session_video(self, session_id, frames, full_audio, sample_rate,
                               voice_results, diar_results):
-        """Render an annotated video from a completed real-time session."""
-        import os
-        import wave
-        import subprocess
-        import tempfile
-        from sklearn.metrics.pairwise import cosine_similarity
+        """Render an annotated video from a completed real-time session.
+
+        Adds an ASD face-bbox overlay on top of the existing VOICE/DIAR/FACE
+        annotations. Bboxes are drawn thin/gray by default; thick/green when
+        the ASD model says the face is speaking. No text on the bbox.
+        Falls back to the original render path if ASD fails.
+        """
+        import os, wave, subprocess, tempfile, shutil, glob, traceback
 
         output_dir = "/workspace/database/recordings"
         os.makedirs(output_dir, exist_ok=True)
@@ -100,15 +144,15 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
         if not frames:
             return
 
-        # Determine fps from frame timestamps
+        # Derive fps from frame timestamps
         if len(frames) >= 2:
             total_time = frames[-1][0] - frames[0][0]
             fps = len(frames) / max(total_time, 0.1)
-            fps = min(max(fps, 1.0), 30.0)  # clamp to 1-30
+            fps = min(max(fps, 1.0), 30.0)
         else:
             fps = 10.0
 
-        # Decode first frame to get dimensions
+        # Decode first frame for dims
         first_jpeg = frames[0][1]
         first_img = cv2.imdecode(np.frombuffer(first_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
         if first_img is None:
@@ -116,129 +160,177 @@ class SpeakerRecognitionManager(pb2_grpc.SpeakerRecognitionServiceServicer):
             return
         frame_h, frame_w = first_img.shape[:2]
 
-        # Voice/diar color maps
-        voice_colors = {}
-        diar_colors = {}
+        # Work dir + wav
+        work_dir = tempfile.mkdtemp(prefix=f"render_{session_id}_")
+        wav_path = os.path.join(work_dir, "audio.wav")
+        with wave.open(wav_path, 'wb') as wf:
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sample_rate)
+            wf.writeframes(bytes(full_audio))
+
+        # Write raw (un-annotated) video so ASD can operate on it
+        raw_video_path = os.path.join(work_dir, "raw.mp4")
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        raw_writer = cv2.VideoWriter(raw_video_path, fourcc, fps, (frame_w, frame_h))
+        for (_ts, jpeg, _w, _h, _fid) in frames:
+            img = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                continue
+            if img.shape[1] != frame_w or img.shape[0] != frame_h:
+                img = cv2.resize(img, (frame_w, frame_h))
+            raw_writer.write(img)
+        raw_writer.release()
+
+        # Try ASD pipeline (skip if disabled via --no-asd)
+        faces_per_frame = None
+        asd_frames_dir = None
+        asd_fps = 25
+        if os.environ.get("SPEAKER_DISABLE_ASD", "0") == "1":
+            _log("--", "ASD", "disabled via --no-asd", _DIM)
+        else:
+            try:
+                faces_per_frame, asd_frames_dir, asd_fps = self._compute_asd_faces(
+                    raw_video_path, wav_path, work_dir
+                )
+                n_inst = sum(len(v) for v in faces_per_frame.values())
+                _log("OK", "ASD", f"{n_inst} face instances across {len(faces_per_frame)} frames", _GREEN)
+            except Exception as e:
+                _log("!!", "ASD ERROR", f"{e}; rendering without bboxes", _YELLOW)
+                traceback.print_exc()
+                faces_per_frame = None
+
+        # Color maps + overlay helpers (shared by both render paths)
+        voice_colors, diar_colors, face_colors = {}, {}, {}
         VCOLORS = [(0,255,0),(0,200,100),(0,255,200),(100,255,0),(0,180,0)]
         DCOLORS = [(0,200,255),(255,100,200),(100,255,255),(200,100,255)]
         FCOLORS = [(255,100,50),(200,50,50),(255,150,0),(180,80,120)]
-        face_colors = {}
 
         def _gc(identity, cmap, palette):
             if identity not in cmap:
                 cmap[identity] = palette[len(cmap) % len(palette)]
             return cmap[identity]
-
         def _vt_local(s):
-            m, sec = divmod(int(s), 60)
-            return f"{m:02d}:{sec:02d}"
-
+            m, sec = divmod(int(s), 60); return f"{m:02d}:{sec:02d}"
         def get_voice_at(t):
             for s, e, vid, conf, status in voice_results:
                 if s <= t <= e:
                     return vid, conf
             return None, 0.0
-
         def get_diar_at(t):
-            active = []
-            for s, e, dlabel, vid in diar_results:
-                if s <= t <= e:
-                    active.append((dlabel, vid))
-            return active
-
-        # Write video frames
-        temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        temp_video.close()
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(temp_video.name, fourcc, fps, (frame_w, frame_h))
+            return [(dl, vi) for s, e, dl, vi in diar_results if s <= t <= e]
 
         num_diar_speakers = len(set(dl for _, _, dl, _ in diar_results))
 
-        for i, (ts, jpeg, w, h, face_id) in enumerate(frames):
-            frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
-            if frame is None:
-                continue
+        # Nearest-by-timestamp face_id lookup (to preserve FACE: <id> label
+        # after ffmpeg re-samples to 25fps)
+        ts_face_list = [(f[0], f[4]) for f in frames if f[4] and f[4] != "unknown"]
+        def face_id_at(t):
+            if not ts_face_list:
+                return None
+            best = min(ts_face_list, key=lambda x: abs(x[0] - t))
+            return best[1] if abs(best[0] - t) < 1.0 else None
 
-            # Resize if needed
-            if frame.shape[1] != frame_w or frame.shape[0] != frame_h:
-                frame = cv2.resize(frame, (frame_w, frame_h))
-
-            # Face label (from recorded face_id)
-            if face_id and face_id != "unknown":
-                fc = _gc(face_id, face_colors, FCOLORS)
-                cv2.putText(frame, f"FACE: {face_id}", (10, 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, fc, 2)
-
+        def _draw_overlays(frame, t, fh, fw, draw_face_label_id=None):
             # Timestamp
-            cv2.putText(frame, _vt_local(ts), (10, 30),
+            cv2.putText(frame, _vt_local(t), (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-            # Voice bar (bottom)
-            active_voice, vconf = get_voice_at(ts)
+            # FACE label
+            if draw_face_label_id and draw_face_label_id != "unknown":
+                fc = _gc(draw_face_label_id, face_colors, FCOLORS)
+                cv2.putText(frame, f"FACE: {draw_face_label_id}", (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, fc, 2)
+            # Voice bar
+            active_voice, vconf = get_voice_at(t)
             if active_voice:
                 vc = _gc(active_voice, voice_colors, VCOLORS)
                 overlay = frame.copy()
-                cv2.rectangle(overlay, (0, frame_h - 70), (frame_w, frame_h), (0, 0, 0), -1)
+                cv2.rectangle(overlay, (0, fh - 70), (fw, fh), (0, 0, 0), -1)
                 cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-                cv2.putText(frame, f"VOICE: {active_voice}", (10, frame_h - 45),
+                cv2.putText(frame, f"VOICE: {active_voice}", (10, fh - 45),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, vc, 2)
                 bar_w = int(vconf * 200)
-                cv2.rectangle(frame, (10, frame_h-25), (10+bar_w, frame_h-15), vc, -1)
-                cv2.rectangle(frame, (10, frame_h-25), (210, frame_h-15), (100,100,100), 1)
-                cv2.putText(frame, f"{vconf:.2f}", (220, frame_h-15),
+                cv2.rectangle(frame, (10, fh-25), (10+bar_w, fh-15), vc, -1)
+                cv2.rectangle(frame, (10, fh-25), (210, fh-15), (100,100,100), 1)
+                cv2.putText(frame, f"{vconf:.2f}", (220, fh-15),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200,200,200), 1)
-                cv2.circle(frame, (frame_w-30, 30), 10, vc, -1)
+                cv2.circle(frame, (fw-30, 30), 10, vc, -1)
             else:
-                cv2.circle(frame, (frame_w-30, 30), 10, (80,80,80), -1)
-
-            # Diarization panel (top-right)
-            cv2.putText(frame, f"DIAR: {num_diar_speakers} spk", (frame_w-180, 30),
+                cv2.circle(frame, (fw-30, 30), 10, (80,80,80), -1)
+            # Diar panel
+            cv2.putText(frame, f"DIAR: {num_diar_speakers} spk", (fw-180, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
-            active_diar = get_diar_at(ts)
             dy = 55
-            for dlabel, vid in active_diar:
+            for dlabel, vid in get_diar_at(t):
                 dc = _gc(dlabel, diar_colors, DCOLORS)
-                cv2.circle(frame, (frame_w-175, dy-5), 6, dc, -1)
+                cv2.circle(frame, (fw-175, dy-5), 6, dc, -1)
                 txt = dlabel
                 if vid and not vid.startswith("pending"):
                     txt += f" = {vid}"
-                cv2.putText(frame, txt, (frame_w-163, dy),
+                cv2.putText(frame, txt, (fw-163, dy),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, dc, 1)
                 dy += 20
 
-            out.write(frame)
+        temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4"); temp_video.close()
+        session_origin = frames[0][0]  # ts of first recorded frame
 
-        out.release()
+        if asd_frames_dir and faces_per_frame is not None:
+            flist = sorted(glob.glob(os.path.join(asd_frames_dir, "*.jpg")))
+        else:
+            flist = []
+
+        if flist:
+            # ASD path: iterate 25fps frames, overlay ASD bboxes + existing annotations
+            first = cv2.imread(flist[0])
+            fh, fw = first.shape[:2]
+            out = cv2.VideoWriter(temp_video.name, fourcc, float(asd_fps), (fw, fh))
+            for fidx, fp in enumerate(flist):
+                frame = cv2.imread(fp)
+                if frame is None:
+                    continue
+                t_abs = session_origin + fidx / float(asd_fps)
+
+                # ASD face bboxes (thin gray inactive, thick green when speaking, no text)
+                for face in faces_per_frame.get(fidx, []):
+                    x1, y1, x2, y2 = face["bbox"]
+                    if face["is_speaking"]:
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    else:
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (120, 120, 120), 1)
+
+                _draw_overlays(frame, t_abs, fh, fw, face_id_at(t_abs))
+                out.write(frame)
+            out.release()
+        else:
+            # Fallback: render directly from recorded JPEGs (no ASD bboxes)
+            out = cv2.VideoWriter(temp_video.name, fourcc, fps, (frame_w, frame_h))
+            for (ts, jpeg, _w, _h, face_id) in frames:
+                frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if frame is None:
+                    continue
+                if frame.shape[1] != frame_w or frame.shape[0] != frame_h:
+                    frame = cv2.resize(frame, (frame_w, frame_h))
+                _draw_overlays(frame, ts, frame_h, frame_w, face_id)
+                out.write(frame)
+            out.release()
 
         # Mux audio
-        temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-        temp_wav.close()
-        import wave as wave_mod
-        with wave_mod.open(temp_wav.name, 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes(bytes(full_audio))
-
         final_path = os.path.join(output_dir, f"session_{session_id}.mp4")
         try:
             subprocess.run([
-                "ffmpeg", "-y", "-i", temp_video.name, "-i", temp_wav.name,
+                "ffmpeg", "-y", "-i", temp_video.name, "-i", wav_path,
                 "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0",
                 "-shortest", final_path
             ], capture_output=True, check=True)
             os.remove(temp_video.name)
         except Exception:
-            # Fallback: video only
-            import shutil
             shutil.move(temp_video.name, final_path)
 
-        os.remove(temp_wav.name)
+        shutil.rmtree(work_dir, ignore_errors=True)
 
         _log("**", "VIDEO SAVED",
              f"{_BOLD}{final_path}{_RESET}  "
              f"({os.path.getsize(final_path) / 1024 / 1024:.1f}MB, "
-             f"{len(frames)} frames, {len(voice_results)} voice segments)",
+             f"{len(frames)} frames, {len(voice_results)} voice segments, "
+             f"asd={'on' if flist else 'off'})",
              _GREEN)
 
     def RecognizeSpeakers(self, request_iterator, context):
