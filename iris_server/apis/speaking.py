@@ -2,6 +2,7 @@ from typing import Any
 
 from core_api import ChatGPT, Grok, RelationshipChecker, AttributeFinder
 from utils import PersonDetails, Neo4j, message_format, ApiObject
+from turn_timing import mark, record_first_moment, span
 from .api_base import ApiBase
 
 class _Speaking(ApiBase):
@@ -59,37 +60,53 @@ class _Speaking(ApiBase):
         return [system_dict]
         
     def __call__(self, person_details: PersonDetails) -> Any:
+        with span("speaking.context_build"):
+            messages, total_prompt = self._build_context(person_details)
+
+        with span("speaking.open_stream"):
+            response = self._request_completion(total_prompt)
+
+        llm_response = ""
+        with span("speaking.generation"):
+            for chunk in response:
+                if chunk.choices[0].delta.content is not None:
+                    content = chunk.choices[0].delta.content
+                    record_first_moment("speaking_first_token_at_ms")
+                    llm_response += content
+                    yield ApiObject(content)
+        mark("reply_chars", len(llm_response))
+
+        with span("speaking.persist"):
+            self._persist_turn(person_details, messages, llm_response)
+
+    def _build_context(self, person_details: PersonDetails):
+        """Gather everything the reply prompt needs. Reads no reasoner output."""
         face_id = person_details.get_attribute("face_id")
         latest_msg = person_details.get_latest_user_message()
-        messages = Neo4j.get_person_messages(latest_msg, face_id)
+        with span("speaking.person_messages"):
+            messages = Neo4j.get_person_messages(latest_msg, face_id)
 
-        # Developing system prompt 
-        person_attributes = person_details.get_attribute("attributes")
-        person_name = person_details.get_attribute("name")
-        person_relationships = Neo4j.describe_relationships_by_face_id(face_id)
+        with span("speaking.relationships"):
+            person_relationships = Neo4j.describe_relationships_by_face_id(face_id)
         system_dict = self._developing_system_prompt(
-            person_name, 
-            person_attributes, 
+            person_details.get_attribute("name"),
+            person_details.get_attribute("attributes"),
             person_relationships
         )
 
-        total_prompt = system_dict + messages 
-        
+        return messages, system_dict + messages
+
+    def _request_completion(self, total_prompt: list):
         # response = Llama.send_to_model(total_prompt, stream=True)
+        # response = Claude.process_text(messages, system_dict, stream=True)
         try:
-            response = ChatGPT.send_text(total_prompt, stream=True, model='gpt-4-turbo') 
+            return ChatGPT.send_text(total_prompt, stream=True, model='gpt-4-turbo')
         except Exception as e:
             print("chatgpt failed ", e)
-            response = Grok.send_text(total_prompt, stream=True, grok_model="grok-3")
-        # response = Claude.process_text(messages, system_dict, stream=True)
+            return Grok.send_text(total_prompt, stream=True, grok_model="grok-3")
 
-        llm_response = ""
-        for chunk in response:
-            if chunk.choices[0].delta.content is not None:
-                content = chunk.choices[0].delta.content
-                llm_response += content
-                yield ApiObject(content)
-        
+    def _persist_turn(self, person_details: PersonDetails, messages: list,
+                      llm_response: str):
         llm_dict = message_format("assistant", llm_response)
         person_details.set_latest_llm_message(llm_dict)
         person_details.set_relevant_messages(messages + [llm_dict])

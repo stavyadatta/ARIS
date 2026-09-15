@@ -19,6 +19,7 @@ from utils import (
 )
 from grpc_pb2 import TextChunk, FaceBoundingBox, QueueRemoval
 from grpc_pb2_grpc import MediaServiceServicer
+from turn_timing import mark, record_first_moment, span, turn
 
 # These are deliberately longer than a one-line error. They give G1's
 # Scratch_head custom action time to read naturally while asking for a retry.
@@ -201,16 +202,26 @@ class MediaManager(MediaServiceServicer):
         if audio_img_item is None:
             return None
         try:
-            transcription = self._transcribe(audio_img_item)
+            with span("transcribe"):
+                transcription = self._transcribe(audio_img_item)
 
             image = audio_img_item.get("image_data")
-            cv2.imwrite(CURRENT_FRAME_PATH, image)
-            face_id = self._resolve_face_id(image, skip_face_validation)
+            with span("write_debug_frame"):
+                cv2.imwrite(CURRENT_FRAME_PATH, image)
+            with span("resolve_face_id"):
+                face_id = self._resolve_face_id(image, skip_face_validation)
 
-            person_details = self._reason_about(transcription, face_id, image)
+            with span("reason"):
+                person_details = self._reason_about(transcription, face_id, image)
+            mark("route", person_details.get_attribute("state"))
 
             print("Executor response:")
-            yield from self._g1_conversation_chunks(Executor(person_details))
+            # Executor returns an unstarted generator, so this span is dispatch
+            # only; the API's own work lands inside api_response below.
+            with span("executor_dispatch"):
+                api_response = Executor(person_details)
+            with span("api_response"):
+                yield from self._g1_conversation_chunks(api_response)
 
         except Exception as e:
             print(f"Error processing audio: {e}")
@@ -237,14 +248,21 @@ class MediaManager(MediaServiceServicer):
         }
 
     def ProcessAudioImg(self, request, context):
+        with turn("process_audio_img"):
+            yield from self._process_audio_img(request)
+
+    def _process_audio_img(self, request):
+        chunks_out = 0
         try:
             if self.audio_save:
                 self._save_request_audio(request)
 
-            image = self._decode_image_from_bytes(request.image_data)
+            with span("decode_image"):
+                image = self._decode_image_from_bytes(request.image_data)
             print("Image has been decoded I think")
             if image is None:
                 print("Is the image coming as None")
+                mark("outcome", "no_image")
                 yield TextChunk(
                     mode="error",
                     text="The image came out as None"
@@ -256,11 +274,15 @@ class MediaManager(MediaServiceServicer):
                 skip_face_validation=request.skip_face_validation
             )
             for response_text, mode in pipeline_response:
+                record_first_moment("first_chunk_at_ms")
+                chunks_out += 1
                 yield TextChunk(text=response_text, is_final=False, mode=mode)
+            mark("chunks_out", chunks_out)
 
         except Exception as e:
             print("Error occurred while processing data: {}".format(
                 traceback.format_exc()))
+            mark("outcome", "error")
             # This is a generator: a returned value is discarded, so the
             # client would be handed a silent stream instead of the error.
             yield TextChunk(

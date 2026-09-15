@@ -6,6 +6,7 @@ from queue import Queue
 from neo4j import GraphDatabase
 
 from utils import PersonDetails
+from turn_timing import span
 
 class _Neo4j:
     def __init__(self, neo4j_url="bolt://172.27.72.27:7687"):
@@ -74,15 +75,17 @@ class _Neo4j:
                 MERGE (p)-[:MESSAGE]->(latestMessage)
         """
         assistant_text = "Hello"
-        assistant_embedding = ChatGPT.get_openai_embedding(assistant_text)
+        with span("neo4j.embed_first_sight_greeting"):
+            assistant_embedding = ChatGPT.get_openai_embedding(assistant_text)
         assistant_message_id = str(uuid.uuid4())
 
-        with self.driver.session() as session:
-            session.run(
-                query, face_id=face_id, name=name, state=state,
-                assistant_text=assistant_text, assistant_embedding=assistant_embedding,
-                assistant_message_id=assistant_message_id
-            )
+        with span("neo4j.create_person"):
+            with self.driver.session() as session:
+                session.run(
+                    query, face_id=face_id, name=name, state=state,
+                    assistant_text=assistant_text, assistant_embedding=assistant_embedding,
+                    assistant_message_id=assistant_message_id
+                )
         self.update_db_name_list()
         print("Created a new person")
 
@@ -232,13 +235,15 @@ class _Neo4j:
         """
 
         from utils import message_format
-        # Getting query embedding 
+        # Getting query embedding
         from core_api import ChatGPT
-        query_embedding = ChatGPT.get_openai_embedding(text)
+        with span("neo4j.embed_query"):
+            query_embedding = ChatGPT.get_openai_embedding(text)
 
 
-        results = self.read_query(cosine_query, query_embedding=query_embedding, 
-                                  top_k=top_k, face_id=face_id)
+        with span("neo4j.cosine_query"):
+            results = self.read_query(cosine_query, query_embedding=query_embedding,
+                                      top_k=top_k, face_id=face_id)
         messages = []
         message_set = set()
         message_num_list = []
@@ -270,7 +275,8 @@ class _Neo4j:
         messages = []
         message_set = set()
         message_num_list = []
-        results = self.read_query(last_k_query, face_id=face_id, k=k)
+        with span("neo4j.last_k_query"):
+            results = self.read_query(last_k_query, face_id=face_id, k=k)
         for idx, result in enumerate(results):
             row = result["chain"]
             for msg in row:
@@ -367,14 +373,16 @@ class _Neo4j:
 
         usr_dict = person_details.get_latest_user_message()
         usr_txt = usr_dict["content"]
-        usr_embedding = ChatGPT.get_openai_embedding(usr_txt)
+        with span("neo4j.embed_user_message"):
+            usr_embedding = ChatGPT.get_openai_embedding(usr_txt)
         usr_message_id = str(uuid.uuid4())
 
         llm_dict = person_details.get_latest_llm_message()
         llm_txt = llm_dict.get("content")
 
         if llm_txt is not None:
-            llm_embedding = ChatGPT.get_openai_embedding(llm_txt)
+            with span("neo4j.embed_llm_message"):
+                llm_embedding = ChatGPT.get_openai_embedding(llm_txt)
         else:
             llm_embedding = None
         llm_message_id = str(uuid.uuid4())
@@ -391,10 +399,11 @@ class _Neo4j:
         }
 
         try:
-            if llm_dict == {}:
-                self.write_query(add_only_usr_msg, **query_params)
-            else:
-                self.write_query(add_llm_msg_query, **query_params)
+            with span("neo4j.write_messages"):
+                if llm_dict == {}:
+                    self.write_query(add_only_usr_msg, **query_params)
+                else:
+                    self.write_query(add_llm_msg_query, **query_params)
         except Exception as e:
             print(f"Error in add_message_to_person: {e}")
             traceback.print_exc()

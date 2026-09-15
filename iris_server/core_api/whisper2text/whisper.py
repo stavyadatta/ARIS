@@ -5,6 +5,8 @@ import whisper
 import tempfile
 import atexit
 
+from turn_timing import span
+
 class _WhisperSpeech2Text:
     def __init__(self, model_name="large-v3"):
         """
@@ -43,15 +45,18 @@ class _WhisperSpeech2Text:
         :param audio_data: Data Object
         :return: Transcribed text.
         """
-        # Getting temp file to write the audio bytes into the 
+        # Getting temp file to write the audio bytes into the
         # wav format
-        temp_recording = self._save2temp(audio_img_data)
+        with span("whisper.write_wav"):
+            temp_recording = self._save2temp(audio_img_data)
 
         # Convert bytes to a torch audio tensor
-        audio_tensor = torch.tensor(
-            whisper.pad_or_trim(whisper.load_audio(temp_recording))
-        ).float()
+        with span("whisper.load_audio"):
+            audio_tensor = torch.tensor(
+                whisper.pad_or_trim(whisper.load_audio(temp_recording))
+            ).float()
         # Run Whisper to transcribe the audio
-        result = self.model.transcribe(audio_tensor, language='en')
+        with span("whisper.transcribe"):
+            result = self.model.transcribe(audio_tensor, language='en')
         return result["text"]
 

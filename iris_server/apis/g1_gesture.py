@@ -15,6 +15,7 @@ from utils import (
     g1_action_payload,
     message_format,
 )
+from turn_timing import span
 from .api_base import ApiBase
 
 
@@ -82,7 +83,8 @@ class _G1Gesture(ApiBase):
         question = G1_CONFIRMATIONS[state]
         self._remember_reply(person_details, question)
         # Keep the confirmation state in Neo4j until the next utterance.
-        Neo4j.add_message_to_person(person_details)
+        with span("g1_gesture.persist"):
+            Neo4j.add_message_to_person(person_details)
         print(f"[g1_action] state={state} action={ACTION_NONE} (awaiting confirmation)")
         return ApiObject(
             g1_action_payload(question, ACTION_NONE), mode=G1_ACTION_MODE
@@ -93,7 +95,8 @@ class _G1Gesture(ApiBase):
         gesture = G1_GESTURES[state]
         self._remember_reply(person_details, gesture["reply"])
         person_details.set_attribute("state", STATE_SPEAK)
-        Neo4j.add_message_to_person(person_details)
+        with span("g1_gesture.persist"):
+            Neo4j.add_message_to_person(person_details)
         print(f"[g1_action] state={state} action={gesture['action']}")
         return ApiObject(
             g1_action_payload(gesture["reply"], gesture["action"]),

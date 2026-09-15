@@ -87,3 +87,5 @@ node_modules/
 ./grpc_communication/grpc_pb2.py
 ./grpc_communication/grpc_pb2_grpc.py
 .claude
+# Per-turn latency measurements written by iris_server/turn_timing.py
+*.jsonl

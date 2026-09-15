@@ -5,6 +5,7 @@ from typing import Optional
 
 from utils import Neo4j, PersonDetails, message_format
 from core_api import Llama, ChatGPT, Grok, ClipClassification
+from turn_timing import mark, span
 from .prompt import action_reasoner_prompt
 
 STATE_NO_FACE = "no face"
@@ -213,13 +214,26 @@ class _Reasoner:
             f"confirmation_needed={gesture}",
         )
 
+    def _routed_by_gates(self, person_details: PersonDetails, transcription: str,
+                         user_prompt: list) -> Optional[PersonDetails]:
+        """Try each deterministic gate in priority order, cheapest intent first."""
+        for route in (self._answer_pending_confirmation,
+                      self._route_requested_gesture,
+                      self._route_uncertain_gesture):
+            routed = route(person_details, transcription, user_prompt)
+            if routed is not None:
+                return routed
+        return None
+
     def _classify_with_llm(self, total_prompt: list) -> str:
         try:
-            response = ChatGPT.send_text(total_prompt, stream=False)
+            with span("reasoner.classify_llm"):
+                response = ChatGPT.send_text(total_prompt, stream=False)
             print("The response is ", response)
         except Exception as e:
             print("chatgpt failed ", e)
-            response = Grok.send_text(total_prompt, stream=False)
+            with span("reasoner.classify_llm_fallback"):
+                response = Grok.send_text(total_prompt, stream=False)
         return response.choices[0].message.content
 
     def _resolve_gesture_family(self, response_text: str) -> str:
@@ -257,18 +271,22 @@ class _Reasoner:
             # No recognisable face in frame. This is a *vision* failure, so
             # ask to be seen rather than falling through to "bad input",
             # which speaks an audio retry request and misleads the person.
+            mark("classifier", "no_face")
             return PersonDetails({"state": STATE_NO_FACE})
         try:
-            person_details = self._person_record(face_id)
+            with span("reasoner.person_record"):
+                person_details = self._person_record(face_id)
             user_prompt = self._developing_user_prompt(transcription)
 
-            for route in (self._answer_pending_confirmation,
-                          self._route_requested_gesture,
-                          self._route_uncertain_gesture):
-                routed = route(person_details, transcription, user_prompt)
-                if routed is not None:
-                    return routed
+            with span("reasoner.gates"):
+                routed = self._routed_by_gates(
+                    person_details, transcription, user_prompt
+                )
+            if routed is not None:
+                mark("classifier", "gate")
+                return routed
 
+            mark("classifier", "llm")
             total_prompt = self._developing_reasoning_prompt() + user_prompt
             response_text = self._resolve_gesture_family(
                 self._classify_with_llm(total_prompt)
