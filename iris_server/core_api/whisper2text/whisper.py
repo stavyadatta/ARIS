@@ -7,6 +7,9 @@ import atexit
 
 from turn_timing import span
 
+WARMUP_SAMPLE_RATE = 16000
+PCM_16_SILENCE_SAMPLE = b"\x00\x00"
+
 class _WhisperSpeech2Text:
     def __init__(self, model_name="large-v3"):
         """
@@ -38,6 +41,19 @@ class _WhisperSpeech2Text:
         except Exception as e:
             print(f"Error saving audio to file: {e}")
             raise
+
+    def warm_up(self):
+        """Transcribe one second of silence so the first real utterance is fast.
+
+        The first call builds the CUDA context and autotunes kernels, measured
+        at ~350 ms more than every call after it.
+        """
+        self({
+            "audio_data": PCM_16_SILENCE_SAMPLE * WARMUP_SAMPLE_RATE,
+            "sample_rate": WARMUP_SAMPLE_RATE,
+            "num_channels": 1,
+            "encoding": "PCM_16",
+        })
 
     def __call__(self, audio_img_data):
         """

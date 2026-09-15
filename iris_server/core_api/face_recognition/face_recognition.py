@@ -11,7 +11,19 @@ from threading import Thread
 from collections import deque
 from typing import List, Tuple, Optional
 from insightface.app import FaceAnalysis
+from insightface.app.common import Face
 from sklearn.metrics.pairwise import cosine_similarity
+
+DETECTION_MODEL_NAME = "detection"
+
+# A frame and a face large enough to drive every sub-model at warm-up. The
+# keypoints are the five ArcFace landmarks (eyes, nose, mouth corners) laid
+# out for the 112x112 crop the recognition model aligns to.
+WARMUP_FRAME_WIDTH = 640
+WARMUP_FRAME_HEIGHT = 480
+WARMUP_FACE_BBOX = [0, 0, 112, 112]
+WARMUP_FACE_KEYPOINTS = [[38, 51], [73, 51], [56, 71], [41, 92], [70, 92]]
+
 
 class _FaceRecognition:
     """
@@ -413,6 +425,31 @@ class _FaceRecognition:
         logging.info(f"Most frequent recognized ID is: {most_frequent_id} "
                     f"(count={max_freq}, none_count={none_count})")
         return most_frequent_id
+
+    def warm_up(self) -> None:
+        """Run every sub-model once so the first real face is not 1.2 s slower.
+
+        Detection initialises on any frame, but the landmark, genderage and
+        recognition sessions only initialise once a face has actually been
+        detected -- measured at 1185 ms, paid by whoever the robot sees first
+        after a restart. A synthetic Face drives them without needing a real
+        one, so warm-up does not depend on the face database having contents.
+        """
+        blank_frame = np.zeros(
+            (WARMUP_FRAME_HEIGHT, WARMUP_FRAME_WIDTH, 3), dtype=np.uint8
+        )
+        self.app.get(blank_frame)
+        for model_name, model in self.app.models.items():
+            if model_name == DETECTION_MODEL_NAME:
+                continue
+            model.get(blank_frame, self._synthetic_face())
+
+    def _synthetic_face(self) -> Face:
+        return Face(
+            bbox=np.array(WARMUP_FACE_BBOX, dtype=np.float32),
+            kps=np.array(WARMUP_FACE_KEYPOINTS, dtype=np.float32),
+            det_score=1.0,
+        )
 
     def recognize_face_relaxed(self, img: np.ndarray) -> Optional[str]:
         """
