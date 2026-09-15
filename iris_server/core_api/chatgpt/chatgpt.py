@@ -2,6 +2,15 @@ import openai
 
 from ..vision_request import _VisionRequestMixin
 
+# A person is standing in front of the robot waiting for an answer, so a
+# stalled request must fail fast enough to fall back to another provider.
+# The SDK defaults are a 600 s timeout and 2 retries, which turned one
+# exhausted-quota response into a 4 s silence and could hold a gRPC worker
+# for ten minutes.
+REQUEST_TIMEOUT_SECONDS = 20
+MAX_RETRIES = 1
+
+
 class _OpenAIHandler(_VisionRequestMixin):
     vision_model = "gpt-4o"
 
@@ -11,7 +20,10 @@ class _OpenAIHandler(_VisionRequestMixin):
 
         :param model_name: The model name to use, e.g., "gpt-4"
         """
-        self.client = openai.OpenAI()
+        self.client = openai.OpenAI(
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            max_retries=MAX_RETRIES,
+        )
 
 
     def get_openai_embedding(self, text):
@@ -33,17 +45,11 @@ class _OpenAIHandler(_VisionRequestMixin):
             :return: Generator of words from llm incase of stream otherwise whole text 
                 output
         """
-        try:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                stream=stream
-            )
-            if isinstance(response, str):
-                raise Exception("chatgpt did not respond, returned str ", response)
-            return response
-        except openai.OpenAIError as e:
-            return f"API Error: {str(e)}"
+        return self.client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=stream
+        )
 
 
     def send_text(self, messages: list[dict], stream: bool, img=None, model="gpt-4o", max_tokens=500):
@@ -56,18 +62,12 @@ class _OpenAIHandler(_VisionRequestMixin):
             :return: Generator of words from llm incase of stream otherwise whole text 
                 output
         """
-        try:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                stream=stream
-            )
-            if isinstance(response, str):
-                raise Exception("chatgpt did not respond, returned str ", response)
-            return response
-        except openai.OpenAIError as e:
-            return f"API Error: {str(e)}"
+        return self.client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            stream=stream
+        )
 
     def img_text_response(self, image, text, max_tokens=1000, system_prompt=None):
         """
@@ -97,8 +97,6 @@ class _OpenAIHandler(_VisionRequestMixin):
             )
             return response.choices[0].message.content
 
-        except openai.OpenAIError as e:
-            return f"API Error: {str(e)}"
         except Exception as e:
             return f"Unexpected Error: {str(e)}"
 
@@ -113,18 +111,12 @@ class _OpenAIHandler(_VisionRequestMixin):
             :return: Generator of words from llm incase of stream otherwise whole text 
                 output
         """
-        try:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                stream=stream,
-                response_format={"type": "json_object"}
-            )
-            if isinstance(response, str):
-                raise Exception("Chatgpt did not respond, only str ", response)
-            return response
-        except openai.OpenAIError as e:
-            return f"API Error: {str(e)}"
+        return self.client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            stream=stream,
+            response_format={"type": "json_object"}
+        )
 
 

@@ -1,5 +1,7 @@
 import os
 
+from ..chatgpt.chatgpt import MAX_RETRIES, REQUEST_TIMEOUT_SECONDS
+
 import openai
 
 from ..vision_request import _VisionRequestMixin
@@ -16,6 +18,8 @@ class _GrokHandler(_VisionRequestMixin):
         self.client = openai.OpenAI(
             api_key=os.getenv("GROK_API_KEY"),
             base_url="https://api.x.ai/v1",
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            max_retries=MAX_RETRIES,
         )
 
 
@@ -73,8 +77,6 @@ class _GrokHandler(_VisionRequestMixin):
             print("The content is ", content)
             return content
 
-        except openai.OpenAIError as e:
-            return f"API Error: {str(e)}"
         except Exception as e:
             return f"Unexpected Error: {str(e)}"
 
