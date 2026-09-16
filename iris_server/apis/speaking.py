@@ -1,3 +1,4 @@
+from threading import Thread
 from typing import Any
 
 from core_api import ChatGPT, Grok, RelationshipChecker, AttributeFinder
@@ -76,8 +77,39 @@ class _Speaking(ApiBase):
                     yield ApiObject(content)
         mark("reply_chars", len(llm_response))
 
-        with span("speaking.persist"):
-            self._persist_turn(person_details, messages, llm_response)
+        self._record_turn_after_reply(person_details, messages, llm_response)
+
+    def _record_turn_after_reply(self, person_details: PersonDetails,
+                                 messages: list, llm_response: str):
+        """Hand persistence to a background thread instead of blocking the reply.
+
+        _g1_conversation_chunks holds every speech chunk until this generator
+        is exhausted, so anything done here lands in front of the person
+        hearing anything at all -- measured at 720 ms of two OpenAI embedding
+        round trips plus a Cypher write, entirely after the words were known.
+
+        The person must still hear the reply and answer before the next turn
+        reads this back, which is far longer than the write takes. Mirrors the
+        daemon-worker pattern in core_api/relationship_checker.
+        """
+        llm_dict = message_format("assistant", llm_response)
+        person_details.set_latest_llm_message(llm_dict)
+        person_details.set_relevant_messages(messages + [llm_dict])
+
+        Thread(
+            target=self._persist_turn,
+            args=(person_details,),
+            daemon=True,
+        ).start()
+
+    def _persist_turn(self, person_details: PersonDetails):
+        try:
+            Neo4j.add_message_to_person(person_details)
+            RelationshipChecker.adding_text2relationship_checker(person_details)
+        except Exception as e:
+            # Off the request thread, so an exception here would otherwise be
+            # swallowed and the turn would silently vanish from the graph.
+            print(f"[speaking] persisting the turn failed: {e}")
 
     def _build_context(self, person_details: PersonDetails):
         """Gather everything the reply prompt needs. Reads no reasoner output."""
@@ -105,11 +137,3 @@ class _Speaking(ApiBase):
             print("chatgpt failed ", e)
             return Grok.send_text(total_prompt, stream=True, grok_model="grok-3")
 
-    def _persist_turn(self, person_details: PersonDetails, messages: list,
-                      llm_response: str):
-        llm_dict = message_format("assistant", llm_response)
-        person_details.set_latest_llm_message(llm_dict)
-        person_details.set_relevant_messages(messages + [llm_dict])
-
-        Neo4j.add_message_to_person(person_details)
-        RelationshipChecker.adding_text2relationship_checker(person_details)
