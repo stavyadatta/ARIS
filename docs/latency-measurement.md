@@ -1,176 +1,356 @@
-# Measuring iris_server turn latency
+# Making Iris answer faster
 
-How the G1 turn path was instrumented, how it is measured, and what the
-measurements have shown so far. Written so a result can be reproduced or
-contradicted rather than taken on trust.
+How slow Iris was, what we changed, what each change was worth, and how we
+measured it. Every number here was measured on the real server, not estimated.
 
-## Why this exists
+---
 
-Before this work the request path had no instrumentation at all — the only
-`time.time()` under `media_manager`, `reasoner`, `executor` or `apis` built a
-filename. Every claim about where a turn's seconds went was therefore a
-model-latency estimate. The first real measurements contradicted two of them
-immediately, so the standing rule is: **measure before optimising, and
-re-measure after.**
+## 1. The short version
 
-## The metric
+A spoken turn went from about **9 seconds to about 7 seconds**. A long
+"do you remember me" answer went from **12.4 seconds to 7.2 seconds**. A
+misheard sentence went from **7.3 seconds of a confident wrong answer** to
+**1.2 seconds of "sorry, say that again"**.
 
-**Time to first chunk (TTFA)** — wall-clock from the server entering
-`ProcessAudioImg` to the first `TextChunk` leaving it. This is what a person
-standing in front of the robot experiences, and it is not the same as total
-RPC time: work done after the reply is on the wire costs the person nothing.
+| Change | Impact |
+|---|---|
+| Made replies short | long answers: 12.4 s → 7.2 s |
+| Save the turn to the database *after* replying | −0.7 s on every spoken turn |
+| Gesture speaks before saving to the database | gestures: 1.0 s → 0.28 s |
+| Misheard speech now says "I didn't catch that" | misheard turns: 7.3 s → 1.2 s |
+| Warm up the AI models at startup | first turn after restart: 14.5 s → 8.6 s |
+| Give up on a stuck OpenAI call after 20 s | removes a 4 s silence (was up to 10 min) |
+| *(added later, on purpose)* gestures reply to what you said | gestures: 0.28 s → 1.6 s |
 
-Reporting both is what makes a *reordering* distinguishable from a *deletion*.
-If TTFA falls while total RPC time holds, work moved off the reply path; if
-both fall, work was removed.
+---
 
-## Instrumentation
+## 2. Why we measured before changing anything
 
-`iris_server/turn_timing.py`. One turn is one `ProcessAudioImg` RPC.
+There was no timing anywhere in the request path. Every belief about where the
+seconds went was a guess. The first real measurements proved two guesses wrong
+straight away:
 
-- `turn(label)` — wraps the RPC, emits the breakdown when it ends
-- `span(name)` — times a section; nests, and reads parent-before-child
-- `mark(name, value)` — a non-timing fact (route taken, reply length)
-- `record_first_moment(name)` — how far into the turn something *first*
-  happened; a per-chunk call site therefore records time-to-first, not
-  time-to-last
+- We assumed speech-to-text (Whisper) took 0.5–3 seconds. **It takes 0.14 s.**
+- We never suspected the first turn after a restart. **It was 6 seconds slower
+  than every turn after it.**
 
-It lives at the package root, not under `utils/`, because every layer imports
-it while `utils/__init__` constructs the Neo4j driver on import.
+There was also a theory that the "reasoner" and "executor" stages should run at
+the same time to save time. Measurement killed it: **the executor takes 0.1
+milliseconds.** It is a dictionary lookup, not a stage. Running it in parallel
+would save one ten-thousandth of the wait.
 
-Two properties worth knowing:
+**Rule going forward: measure, change, measure again.**
 
-- **Measurement never breaks a turn.** With no active turn every entry point
-  is a no-op; emission failures are printed, not raised.
-- **The active turn is thread-local.** gRPC serves each RPC on its own worker
-  and drives that request's response generator on the same thread. A
-  consequence that matters: *work deferred to a background thread disappears
-  from the turn timeline*. That is correct — it is no longer on the critical
-  path — but it means "the span vanished" is itself a result to check.
+---
 
-Output goes to stdout as `[timing]` blocks and appends one JSON object per
-turn to `iris_server/logs/turn_timing.jsonl` (gitignored).
+## 3. How we measure
 
-## Running an experiment
+### What we count
 
-```bash
-export IRIS_LATENCY_WORKDIR=/some/scratch   # holds audio/ and timing_client.py
-test/iris_server/run_latency_experiment.sh <label> <utterance> <turns>
+**Time to first chunk** — from the moment the server receives the audio to the
+moment it sends back the first piece of the reply. This is what a person
+standing in front of the robot actually waits for.
+
+We also record **total request time**, which includes work done *after* the
+reply was sent. Recording both lets us prove the difference between:
+
+- **moving** work out of the way (first-chunk time drops, total stays the same)
+- **deleting** work (both drop)
+
+### The tool
+
+`iris_server/turn_timing.py` times every stage of every turn. It prints a block
+like this, and appends the same data as JSON to
+`iris_server/logs/turn_timing.jsonl`:
+
+```
+[timing] process_audio_img total=7309.0ms
+[timing]   transcribe                        297.8ms   4.1%
+[timing]     whisper.transcribe              261.9ms   3.6%
+[timing]   resolve_face_id                    12.6ms   0.2%
+[timing]   reason                            970.0ms  13.3%
+[timing]     reasoner.classify_llm           965.1ms  13.2%
+[timing]   api_response                     7940.1ms  86.4%
+[timing]     speaking.context_build          862.6ms   9.4%
+[timing]     speaking.open_stream           4169.0ms  45.4%
+[timing]     speaking.generation            2222.4ms  24.2%
+[timing] facts route=speak reply_chars=122 first_chunk_at_ms=7309
 ```
 
-The script restarts the server on the current working tree, runs a fixed
-number of turns against a fixed audio/image pair, and saves the JSONL under
-the label. Fixtures used so far: utterances generated with OpenAI `tts-1`
-(so they are stable and repeatable, unlike a live microphone), and
-`database/face_db/face_1.png` as the frame so recognition always resolves.
+It can never break a turn: if no turn is active every call does nothing, and if
+printing fails it says so rather than raising an error.
 
-### Protocol
+### Running a test
 
-1. **Discard the first turn.** Cold CUDA contexts and the first HTTPS
-   connection make it unrepresentative. It is worth reporting separately —
-   that is how the model warm-up work was justified — but never pooled with
-   the rest.
-2. **Choose the route deliberately.** They behave nothing alike. The gesture
-   route exits on a regex gate with a constant reply and is the low-variance
-   control (TTFA spread ~±20 ms). The speak route's TTFA is dominated by
-   reply length and swings by seconds; raw medians across conditions are close
-   to meaningless on it.
-3. **Prefer a variance-independent statistic** when the route is noisy. For
-   the deferred-persist change the useful measure was the residual inside
-   `api_response` that `context_build + open_stream + generation` do not
-   account for — that is exactly where the persist sat, and it does not move
-   with reply length.
-4. **Check side effects actually still happen.** A latency win that silently
-   drops writes is not a win. Count the affected nodes in Neo4j before and
-   after.
+```bash
+export IRIS_LATENCY_WORKDIR=/some/folder     # holds audio/ and timing_client.py
+test/iris_server/run_latency_experiment.sh <name> <utterance> <number-of-turns>
+```
 
-### Known confounders
+This restarts the server using the current code, sends the same audio and photo
+a fixed number of times, and saves the results under `<name>`.
 
-- **The harness force-removes the container** (`docker rm -f`) as soon as the
-  last reply lands. Anything deferred to a background thread can be killed
-  mid-flight. This produced a real false negative once — see below.
-- **Network variance to OpenAI is large** and unrelated to any code change.
-  The same `speaking.persist` work measured 730 ms and 965 ms across runs.
-- **Repeating one utterance** makes any text-keyed cache look better than it
-  would in production. Vary the input before trusting a caching result.
-- **Turns write to the live Neo4j.** Each speak or gesture turn adds two
-  `Message` nodes to the person's chain, which then feed `get_last_k_msgs` on
-  later turns.
+Test audio is generated with OpenAI text-to-speech so every run says exactly the
+same words. A live microphone would say something slightly different each time
+and runs could not be compared. The photo is `database/face_db/face_1.png`, so
+face recognition always succeeds.
 
-## Results so far
+### Four rules we follow
 
-Hardware: RTX 4090, Neo4j over LAN, OpenAI over WAN. Medians.
+1. **Throw away the first turn.** The models are cold and it is not
+   representative. Report it separately if it matters.
+2. **Know which route you are testing.** A gesture turn and a spoken turn behave
+   completely differently. Gestures are steady (±20 ms) and make a good control.
+   Spoken turns swing by seconds depending on how long the reply is.
+3. **When the numbers are noisy, measure something that is not.** For the
+   database change in 5.3, reply length made the total jump around by seconds —
+   so we measured only the gap the database work used to fill. That gap does not
+   change with reply length.
+4. **Check the side effects still happen.** A change that looks faster because
+   it quietly stopped saving data is not an improvement. Count the database rows
+   before and after.
 
-### Baseline
+---
 
-| route | TTFA | shape |
+## 4. Where the time went, originally
+
+One spoken turn, measured:
+
+| Stage | Time |
+|---|---|
+| Speech to text (Whisper) | 0.30 s |
+| Face recognition | 0.01 s |
+| Deciding what to do (LLM) | 0.97 s |
+| Fetching past conversation | 0.86 s |
+| **Waiting for the first word from gpt-4-turbo** | **4.17 s** |
+| Generating the rest of the reply | 2.22 s |
+| Saving the turn to the database | 0.72 s |
+
+All the local work — speech-to-text, face recognition, image decoding, database
+lookup — adds up to about **0.19 seconds**. Everything else is waiting on OpenAI
+or on the database.
+
+---
+
+## 5. The changes
+
+### 5.1 Replies were far too long
+
+**Before.** The prompt told Iris to answer "do you remember me" with the
+person's name *"along with their shared experiences"*, and the example in the
+prompt listed several. Iris obeyed, producing 455 characters reciting the
+person's degree, thesis, hobbies and reading list.
+
+**What we changed.** The instruction and its example now ask for the name and
+**one** shared detail, turned back into a question.
+
+**Impact.**
+
+| | Before | After |
 |---|---|---|
-| `speak` | 9234 ms | 4169 ms gpt-4-turbo TTFT, 2222 ms generation, 863 ms retrieval, 724 ms persist |
-| `g1 wave` | 1015 ms | 730 ms of it persisting a constant string |
+| Reply length | 455 characters | 94 characters |
+| Generating the reply | 3.39 s | 0.68 s |
+| Time to first chunk | 12.40 s | 7.20 s |
 
-Local (non-LLM) stages total ~190 ms: Whisper 138 ms, face 13 ms, decode
-0.7 ms, Neo4j person lookup 5 ms, regex gates 0.0 ms.
+**How we tested.** Six turns of "What do you remember about me?" before and
+after, same audio. We also read the replies back out of the database to confirm
+they still ended in a complete sentence.
 
-### Changes measured
+**What did not work.** Our first attempt set a hard limit of 60 tokens. The
+numbers improved, but replies came out **cut off mid-sentence** — one ended on
+"How's your". The robot would have said that out loud. It turned out the
+original 500-token limit was never being reached anyway (the longest reply ever
+recorded was about 114 tokens), so the limit was never the problem. Shortness
+has to come from the prompt. The limit is now 120, purely as a safety net.
 
-| change | metric | before | after |
-|---|---|---|---|
-| Warm models at startup | first-turn `resolve_face_id` | 1656.7 ms | 12.5 ms |
-| | first-turn `whisper.transcribe` | 621.9 ms | 278.8 ms |
-| Gesture: yield before persist | gesture TTFA | 1015 ms | 284 ms |
-| Speak: persist after reply | `api_response` residual | 724.4 ms | 5.0 ms |
-| Reply brevity (prompt) | long-route reply length | 455 chars | 94 chars |
-| | long-route TTFA | 12395 ms | 7195 ms |
-| | client mic-blanking | 30350 ms | 7588 ms |
+**Worth knowing.** Iris reads its own past replies back as examples. Right after
+this change it still produced a few long ones, copying its own history. It
+settled after a handful of turns.
 
-Only ~2.0 s of the warm-up's 5.9 s first-turn improvement is attributable to
-the change; the rest was a drop in the first OpenAI call that warming local
-models cannot explain, and is not claimed.
+### 5.2 A gesture waited on the database before speaking
 
-### The false negative, recorded because it nearly misled us
+**Before.** When Iris waves, the reply is short and already decided. But the code
+saved the turn to the database *before* handing the reply over — two calls to
+OpenAI and one database write, all while the person waited.
 
-After deferring the spoken-turn persist, Neo4j showed 7 new messages for 8
-turns — one apparently lost. The change looked unsafe. Re-running with a
-five-second settle before teardown produced 3 writes for 3 turns and no logged
-errors, which located the cause in the harness rather than the code: the
-daemon thread was being killed by `docker rm -f`. The residual exposure is
-genuine but bounded — one in-flight turn at abrupt shutdown — and the gesture
-route, which persists inside the RPC, lost nothing across the same 8 turns.
+**What we changed.** Send the reply first, then save. The save still finishes
+inside the same request; only its position moved.
 
-## The client is half the pipeline
+**Impact.** Gesture time to first chunk: **1.02 s → 0.28 s (−72%)**.
 
-`unitree-g1-edu` settles two things the server cannot:
+**How we tested.** Six turns before, seven after. The two sets do not overlap at
+all — the slowest "after" turn was still faster than the fastest "before" turn.
+Crucially, **total request time went up** by a similar amount, which proves the
+work moved rather than disappeared.
 
-- **The client buffers too.** `g1_client_cpp/aris_image_queue_smoke.cpp`
-  accumulates `complete_reply += chunk.text()` across the whole stream and
-  speaks only after `Finish()`. Server-side streaming alone would therefore
-  change nothing.
-- **G1's TTS cannot queue.** `TtsMaker` returns when the request is accepted,
-  and per `docs/g1-client-cpp-guide.md` "submitting another sentence
-  immediately can interrupt the first one". Sentence-at-a-time playback would
-  have to be paced by a sleep against an unreliable duration estimate.
+### 5.3 A spoken reply waited on the database too
 
-**Reply length is therefore the dominant client-side cost.** `robot/speak.cpp`
-blanks the microphone for `clamp(chars x 77ms, 800, 30000) + 350` after
-playback starts, so every character is paid for twice -- once generating it
-behind the buffer, once waiting it out. A 455-character reply cost the full
-30 s clamp.
+**Before.** The same problem on spoken turns, but the fix above does not work
+here: the reply is produced word by word and the code holds all the words until
+the end, so anything after the last word still lands in front of the person.
 
-Any latency work on a spoken turn should therefore report reply length
-alongside the timings, and ideally the derived blanking figure, because that
-term dwarfs everything on the server.
+**What we changed.** The save now runs on a background thread.
 
-## Open questions
+**Impact.** **0.72 s → 0.005 s** removed from the waiting time.
 
-- gpt-4-turbo TTFT (4169 ms) is the single largest item on a spoken turn and
-  is untouched by everything above; `speaking.py:80` pins the model.
-- The remaining dead air is the generation tail, which the whole-utterance
-  buffer in `_g1_conversation_chunks` pins to the *last* token. Removing it
-  needs a wire change and a G1 client that can accept appended speech.
-- Reply brevity comes from the prompt, not `max_tokens` -- the inherited 500
-  never bound (the longest reply observed was 455 characters, ~114 tokens) and
-  a cap low enough to bind truncates mid-sentence. Retrieved history also acts
-  as few-shot examples, so a prompt change takes a few turns to converge.
-- The route mix in real use is still unknown. `executor.py` logs the selected
-  API and `turn_timing` records the route, so a day of real traffic would
-  settle which of these numbers actually matters.
+**How we tested.** Reply length made total time swing between 3.8 s and 9.7 s,
+so totals were useless for comparison. Instead we measured only the leftover gap
+where the saving used to sit, which does not depend on reply length. Before:
+0.72 s. After: 0.005 s. No overlap between runs.
+
+**The trade-off, measured rather than assumed.** A turn killed mid-save is lost.
+Eight turns where we killed the server immediately saved seven. Three turns
+given five seconds to finish saved three, with no errors. So the exposure is one
+turn, and only if the server is killed at that exact moment.
+
+**A mistake worth recording.** When we first saw "7 saves for 8 turns" we
+believed the change was losing data. It was not — our own test script was
+killing the server too fast. We only found out by re-running with a delay.
+**If a result looks alarming, suspect the test before the code.**
+
+### 5.4 Misheard speech was answered as if understood
+
+**Before.** When Iris could not make out what was said, it correctly decided
+"bad input" — and then the code **threw that decision away** and reused whatever
+Iris was doing last, usually "have a conversation". So the noise went to the
+conversation model, which answered from memory and produced a confident reply to
+something nobody said. In practice it repeated whichever line appeared most
+often in that person's history.
+
+**What we changed.** "Bad input" now reaches the code written to handle it,
+which produces the "I didn't catch that" reply and the head-scratch gesture.
+Both had been unreachable.
+
+**Impact.** A misheard turn: **~7.3 s of a wrong answer → ~1.2 s of "sorry,
+could you say that again"**.
+
+**How we tested.** Three turns of silent audio. The log now shows
+`Person State: bad input`, and Iris replies *"I am still learning to listen in a
+noisy room. Please say that again when you are ready."*
+
+### 5.5 The models were cold on the first turn
+
+**Before.** Speech-to-text and face recognition each set themselves up on first
+use. That cost landed on whoever spoke first after a restart — usually a demo
+audience.
+
+**What we changed.** Run one throwaway recognition of each at startup, before
+the server accepts any request.
+
+**Impact.** First turn after restart: **14.5 s → 8.6 s**.
+
+| | Before | After |
+|---|---|---|
+| Face recognition, first turn | 1.66 s | 0.013 s |
+| Speech to text, first turn | 0.62 s | 0.28 s |
+
+**Honesty note.** Only about **2 seconds** of that 5.9 s improvement is ours.
+The rest was the first connection to OpenAI being slow, which warming up local
+models cannot explain. We are not claiming it.
+
+**One catch.** Warming up with a blank image was not enough. Face *detection*
+starts up on any image, but face *recognition* only starts up once a face has
+actually been found — worth 1.2 s on its own. We warm it with a fake face so it
+does not depend on the face database containing anyone.
+
+### 5.6 A failed OpenAI call cost 4 seconds of silence
+
+**Before.** The OpenAI client used default settings: wait up to **10 minutes**,
+retry twice. Worse, when a call failed the code returned the error as ordinary
+text instead of raising it — so the backup provider (Grok) never ran. The turn
+ended with the robot saying **nothing at all**.
+
+**What we changed.** Wait at most 20 seconds, retry once, and let failures raise
+so the backup can actually take over.
+
+**Impact.** No change to normal speed. Removes a 4-second silence when OpenAI
+fails, and caps the worst case.
+
+**How we tested.** We hit this for real — the API key ran out of credit
+mid-testing and we captured the exact crash.
+
+### 5.7 The one change that made things slower, on purpose
+
+Gestures used to speak one fixed sentence. Now they answer what was actually
+said:
+
+> *"I just passed my thesis defense, can you give me a high five?"*
+> → *"Congratulations, Tavia, you absolutely nailed it!"*
+
+**Impact.** Gesture time to first chunk: **0.28 s → 1.63 s** (0.81 s of that is
+the extra AI call). A real cost, chosen deliberately. It is still faster than
+the 1.02 s this path cost before any of this work.
+
+**A mistake worth recording.** Our first version showed the AI the old fixed
+sentence "for tone". It copied it back word for word — so we spent 1.3 seconds
+regenerating a constant. Removing the example fixed it immediately.
+
+---
+
+## 6. What we did not fix, and why
+
+**Waiting 4.17 s for gpt-4-turbo's first word.** The single biggest remaining
+item — **57% of a spoken turn**. It is one word in the code (the model name in
+`speaking.py`). Changing the model was ruled out, so it stands. It is larger
+than everything in section 5 put together.
+
+**Sending the reply piece by piece as it is written.** Iris holds the whole
+reply until it is finished. Sending it in pieces would let the robot start
+talking sooner. We investigated and decided against it:
+
+- The robot's own software **also** holds the whole reply before speaking, so
+  changing only the server would achieve nothing.
+- The robot's speech system **cannot queue sentences** — sending a second one
+  interrupts the first. Its own documentation says so.
+- The most it could save is about 0.95 s, and it needs coordinated changes in
+  two codebases.
+
+Shortening replies (5.1) was cheaper and gained more.
+
+---
+
+## 7. Things that caught us out
+
+- **Whisper is fast.** We assumed 0.5–3 s; it is 0.14 s, even on silence. We
+  nearly optimised something worth 3% of the turn.
+- **A limit that never applies does nothing.** The 500-token reply limit was
+  never reached, so lowering it looked free — until it began cutting sentences
+  in half.
+- **Showing the AI an example makes it copy the example.** This happened twice.
+- **Our own test script invented a bug.** See 5.3.
+- **Network noise is large.** The same database work measured 0.73 s and 0.97 s
+  on different runs. Effects smaller than that cannot be found by comparing
+  totals.
+- **Iris imitates its own history.** Both prompt changes took several turns to
+  take hold, because Iris was copying its own older replies.
+
+---
+
+## 8. The robot side matters more than the server
+
+Two settings in the robot's own software (`unitree-g1-edu`, not this repo) cost
+more than everything in this document combined:
+
+- It waited **1.29 s of silence** before deciding you had stopped talking.
+  Typical for this kind of system is 0.5–0.8 s. Now 0.69 s.
+- After speaking it stops listening for a **guessed** duration — 77 ms per
+  character. On a 455-character reply that was **30 seconds deaf**. Shortening
+  replies (5.1) cut this to about 7 s; retuning the guess to 67 ms/char cut it
+  further.
+
+That second number is still an estimate. It can be measured exactly: time the
+robot speaking a sentence of known length and set the constant from that.
+
+---
+
+## 9. Still open
+
+- Nobody knows the real mix of gesture, spoken and misheard turns in normal use.
+  Every turn now records its route, so a day of real use would settle which of
+  these numbers actually matters.
+- Iris sometimes says it cannot see a person who has not moved. Undiagnosed. The
+  log line `[face_id] none ... recognized_votes=[...]` was added for exactly this
+  and will show whether camera frames were rejected or simply not recognised.
+- Iris and the Pepper robot share one database. Pepper's old replies appear in
+  Iris's memory and Iris sometimes copies them. Not fixed, because cleaning it
+  would damage Pepper's memory too.
