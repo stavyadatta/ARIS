@@ -5,6 +5,7 @@ Unitree action IDs.  It emits a small allow-listed intent which the G1 client
 must validate and map to its own approved action implementation.
 """
 
+from core_api import ChatGPT
 from utils import (
     ACTION_NONE,
     ApiObject,
@@ -18,40 +19,53 @@ from utils import (
 from turn_timing import span
 from .api_base import ApiBase
 
+# One short spoken line. The reply travels as a single g1_action JSON object,
+# so there is nothing to stream and a blocking call costs no more than a
+# streamed one.
+GESTURE_REPLY_MAX_TOKENS = 40
+
 
 # The reasoner may select only these states.  Keep replies short because the
 # robot client can speak them before it performs the corresponding gesture.
 G1_GESTURES = {
     "g1 wave": {
         "action": "wave",
+        "doing": "waving hello to them",
         "reply": "Hello! It is nice to meet you.",
     },
     "g1 handshake": {
         "action": "handshake",
+        "doing": "reaching out to shake their hand",
         "reply": "Nice to meet you too.",
     },
     "g1 high five": {
         "action": "high_five",
+        "doing": "giving them a high five",
         "reply": "High five!",
     },
     "g1 blow kiss left": {
         "action": "blow_kiss_with_left_hand",
+        "doing": "blowing them a goodbye kiss",
         "reply": "Goodbye! It was lovely talking with you.",
     },
     "g1 blow kiss right": {
         "action": "blow_kiss_with_right_hand",
+        "doing": "blowing them a goodbye kiss",
         "reply": "See you next time! Take care.",
     },
     "g1 clap": {
         "action": "clamp",
+        "doing": "applauding them",
         "reply": "Bravo!",
     },
     "g1 hug": {
         "action": "hug",
+        "doing": "opening your arms for a hug",
         "reply": "Come here, let me give you a hug.",
     },
     "g1 hand on heart": {
         "action": "right_hand_on_heart",
+        "doing": "placing a hand on your heart",
         "reply": "That means a lot to me, thank you.",
     },
 }
@@ -107,13 +121,59 @@ class _G1Gesture(ApiBase):
     def _perform_gesture(self, person_details: PersonDetails,
                          state: str) -> ApiObject:
         gesture = G1_GESTURES[state]
-        self._remember_reply(person_details, gesture["reply"])
+        reply = self._spoken_reply_for(person_details, gesture)
+        self._remember_reply(person_details, reply)
         person_details.set_attribute("state", STATE_SPEAK)
-        print(f"[g1_action] state={state} action={gesture['action']}")
+        print(f"[g1_action] state={state} action={gesture['action']} reply={reply!r}")
         return ApiObject(
-            g1_action_payload(gesture["reply"], gesture["action"]),
+            g1_action_payload(reply, gesture["action"]),
             mode=G1_ACTION_MODE,
         )
+
+    def _spoken_reply_for(self, person_details: PersonDetails,
+                          gesture: dict) -> str:
+        """Answer what the person actually said, rather than a written line.
+
+        Falls back to that written line on any failure. The arm is already
+        committed by the time this runs, so a text model being slow or
+        unavailable must never stop the robot speaking at all.
+        """
+        try:
+            with span("g1_gesture.reply_llm"):
+                response = ChatGPT.send_text(
+                    self._reply_prompt(person_details, gesture),
+                    stream=False,
+                    max_tokens=GESTURE_REPLY_MAX_TOKENS,
+                )
+            reply = response.choices[0].message.content.strip()
+            return reply or gesture["reply"]
+        except Exception as e:
+            print(f"[g1_action] reply generation failed, using written line: {e}")
+            return gesture["reply"]
+
+    def _reply_prompt(self, person_details: PersonDetails, gesture: dict) -> list:
+        """Build a deliberately small prompt.
+
+        No Neo4j retrieval and no conversation history: the reasoner already
+        fetched this person's record, and a gesture turn is the fastest path
+        the robot has. Everything added here is paid before the arm moves.
+        """
+        system_prompt = f"""
+            You are Iris, a humanoid robot talking with {person_details.get_attribute("name")}.
+            You are {gesture["doing"]} right now, because they asked you to.
+
+            Reply with ONE short spoken sentence, under fifteen words. React to
+            what they actually said -- if they mentioned news, a feeling or a
+            reason, respond to that, not just to the gesture. Do not narrate the
+            gesture; they can see it.
+
+            You are speaking out loud: no lists, no emoji, no stage directions.
+            Warm and natural, the way a person would say it.
+        """
+        return [
+            message_format("system", system_prompt),
+            person_details.get_latest_user_message(),
+        ]
 
     def _reject_unknown_state(self, state: str) -> ApiObject:
         """Never substitute a guessed action for an unrecognised state.
