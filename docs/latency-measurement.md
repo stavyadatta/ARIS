@@ -119,6 +119,9 @@ Local (non-LLM) stages total ~190 ms: Whisper 138 ms, face 13 ms, decode
 | | first-turn `whisper.transcribe` | 621.9 ms | 278.8 ms |
 | Gesture: yield before persist | gesture TTFA | 1015 ms | 284 ms |
 | Speak: persist after reply | `api_response` residual | 724.4 ms | 5.0 ms |
+| Reply brevity (prompt) | long-route reply length | 455 chars | 94 chars |
+| | long-route TTFA | 12395 ms | 7195 ms |
+| | client mic-blanking | 30350 ms | 7588 ms |
 
 Only ~2.0 s of the warm-up's 5.9 s first-turn improvement is attributable to
 the change; the rest was a drop in the first OpenAI call that warming local
@@ -134,6 +137,29 @@ daemon thread was being killed by `docker rm -f`. The residual exposure is
 genuine but bounded — one in-flight turn at abrupt shutdown — and the gesture
 route, which persists inside the RPC, lost nothing across the same 8 turns.
 
+## The client is half the pipeline
+
+`unitree-g1-edu` settles two things the server cannot:
+
+- **The client buffers too.** `g1_client_cpp/aris_image_queue_smoke.cpp`
+  accumulates `complete_reply += chunk.text()` across the whole stream and
+  speaks only after `Finish()`. Server-side streaming alone would therefore
+  change nothing.
+- **G1's TTS cannot queue.** `TtsMaker` returns when the request is accepted,
+  and per `docs/g1-client-cpp-guide.md` "submitting another sentence
+  immediately can interrupt the first one". Sentence-at-a-time playback would
+  have to be paced by a sleep against an unreliable duration estimate.
+
+**Reply length is therefore the dominant client-side cost.** `robot/speak.cpp`
+blanks the microphone for `clamp(chars x 77ms, 800, 30000) + 350` after
+playback starts, so every character is paid for twice -- once generating it
+behind the buffer, once waiting it out. A 455-character reply cost the full
+30 s clamp.
+
+Any latency work on a spoken turn should therefore report reply length
+alongside the timings, and ideally the derived blanking figure, because that
+term dwarfs everything on the server.
+
 ## Open questions
 
 - gpt-4-turbo TTFT (4169 ms) is the single largest item on a spoken turn and
@@ -141,8 +167,10 @@ route, which persists inside the RPC, lost nothing across the same 8 turns.
 - The remaining dead air is the generation tail, which the whole-utterance
   buffer in `_g1_conversation_chunks` pins to the *last* token. Removing it
   needs a wire change and a G1 client that can accept appended speech.
-- Reply length is an unexamined dial: `speaking.py:80` passes no `max_tokens`,
-  so it inherits 500, and every token is dead air under the current buffer.
+- Reply brevity comes from the prompt, not `max_tokens` -- the inherited 500
+  never bound (the longest reply observed was 455 characters, ~114 tokens) and
+  a cap low enough to bind truncates mid-sentence. Retrieved history also acts
+  as few-shot examples, so a prompt change takes a few turns to converge.
 - The route mix in real use is still unknown. `executor.py` logs the selected
   API and `turn_timing` records the route, so a day of real traffic would
   settle which of these numbers actually matters.
