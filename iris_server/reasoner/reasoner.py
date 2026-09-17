@@ -4,7 +4,7 @@ import re
 from typing import Optional
 
 from utils import Neo4j, PersonDetails, message_format
-from core_api import Llama, ChatGPT, Grok, ClipClassification
+from core_api import Llama, ChatGPT, Grok
 from turn_timing import mark, span
 from .prompt import action_reasoner_prompt
 
@@ -12,8 +12,14 @@ STATE_NO_FACE = "no face"
 STATE_SPEAK = "speak"
 STATE_BAD_INPUT = "bad input"
 NO_CHANGE_RESPONSES = ("no change", "no change.")
-# Both mean "whatever state this person is already in stands".
-KEEP_CURRENT_STATE_RESPONSES = (STATE_BAD_INPUT, "no change")
+# Only "no change" means "whatever state this person is already in stands".
+#
+# "bad input" must NOT be here. Substituting the previous state sent a garbled
+# or silent utterance to whichever API the person was last routed to -- usually
+# Speaking, which then answered from conversation history and produced a
+# confident reply to something nobody said. It has to reach the bad-input API,
+# which yields nothing so the handler speaks a listening fallback instead.
+KEEP_CURRENT_STATE_RESPONSES = ("no change",)
 
 G1_STATE_PREFIX = "g1 "
 CONFIRM_STATE_PREFIX = "g1 confirm "
@@ -92,19 +98,6 @@ class _Reasoner:
     def _developing_user_prompt(self, text: str):
         user_prompt = message_format("user", text)
         return [user_prompt]
-
-    def _bad_input_handler(self, response_text):
-        face_class = ClipClassification.get_most_face_class()
-        print("The face class is ", face_class)
-        if response_text == STATE_BAD_INPUT:
-            if face_class in {"side_face", "no_face", "slight_side_face"}:
-                return STATE_BAD_INPUT
-            else:
-                return STATE_SPEAK
-        else:
-            if face_class in {"side_face", "no_face", "slight_side_face"}:
-                return STATE_BAD_INPUT
-        return response_text
 
     def _requested_g1_gesture(self, transcription: str) -> Optional[str]:
         """Return one allow-listed G1 gesture for an explicit spoken request.
