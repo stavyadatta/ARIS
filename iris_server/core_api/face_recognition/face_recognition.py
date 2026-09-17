@@ -16,6 +16,13 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 DETECTION_MODEL_NAME = "detection"
 
+# InsightFace's own default. The previous 0.7 denied a person crouched close
+# to the robot, whose head is clipped by the top of a downward-pointing
+# camera: that pose measures det_score 0.55-0.65, so Iris replied that it
+# could not see someone plainly in shot. Identity stays gated separately by
+# recognition_threshold, which this does not relax.
+FACE_DETECTION_THRESHOLD = 0.5
+
 # A frame and a face large enough to drive every sub-model at warm-up. The
 # keypoints are the five ArcFace landmarks (eyes, nose, mouth corners) laid
 # out for the 112x112 crop the recognition model aligns to.
@@ -95,7 +102,8 @@ class _FaceRecognition:
         providers = [('CUDAExecutionProvider', {"device_id": 0}), 'CPUExecutionProvider'] \
             if torch.cuda.is_available() else ['CPUExecutionProvider']
         app = FaceAnalysis(name=self.model_name, providers=providers)
-        app.prepare(ctx_id=0 if torch.cuda.is_available() else -1, det_thresh=0.7)
+        app.prepare(ctx_id=0 if torch.cuda.is_available() else -1,
+                    det_thresh=FACE_DETECTION_THRESHOLD)
         return app
 
     def _get_3d_model_points(self):
