@@ -25,55 +25,48 @@ from .api_base import ApiBase
 GESTURE_REPLY_MAX_TOKENS = 40
 
 
-# The reasoner may select only these states.  Keep replies short because the
-# robot client can speak them before it performs the corresponding gesture.
+# The reasoner may select only these states. `doing` describes the physical
+# act so the reply can be written to fit it; the words themselves are
+# generated per turn from what the person actually said.
 G1_GESTURES = {
     "g1 wave": {
         "action": "wave",
         "doing": "waving hello to them",
-        "reply": "Hello! It is nice to meet you.",
     },
     "g1 handshake": {
         "action": "handshake",
         "doing": "reaching out to shake their hand",
-        "reply": "Nice to meet you too.",
     },
     "g1 high five": {
         "action": "high_five",
         "doing": "giving them a high five",
-        "reply": "High five!",
     },
     "g1 blow kiss left": {
         "action": "blow_kiss_with_left_hand",
         "doing": "blowing them a goodbye kiss",
-        "reply": "Goodbye! It was lovely talking with you.",
     },
     "g1 blow kiss right": {
         "action": "blow_kiss_with_right_hand",
         "doing": "blowing them a goodbye kiss",
-        "reply": "See you next time! Take care.",
     },
     "g1 clap": {
         "action": "clamp",
         "doing": "applauding them",
-        "reply": "Bravo!",
     },
     "g1 hug": {
         "action": "hug",
         "doing": "opening your arms for a hug",
-        "reply": "Come here, let me give you a hug.",
     },
     "g1 hand on heart": {
         "action": "right_hand_on_heart",
         "doing": "placing a hand on your heart",
-        "reply": "That means a lot to me, thank you.",
     },
 }
 
 G1_CONFIRMATIONS = {
-    "g1 confirm wave": "Did you ask me to wave? Please say yes to confirm.",
-    "g1 confirm handshake": "Did you ask me to shake hands? Please say yes to confirm.",
-    "g1 confirm high five": "Did you ask me for a high five? Please say yes to confirm.",
+    "g1 confirm wave": "wave at them",
+    "g1 confirm handshake": "shake their hand",
+    "g1 confirm high five": "give them a high five",
 }
 
 STATE_SPEAK = "speak"
@@ -110,10 +103,21 @@ class _G1Gesture(ApiBase):
 
     def _ask_for_confirmation(self, person_details: PersonDetails,
                               state: str) -> ApiObject:
-        question = G1_CONFIRMATIONS[state]
         # Keep the confirmation state in Neo4j until the next utterance.
+        question = self._generated_line(
+            person_details,
+            f"""
+            You think {person_details.get_attribute("name")} may have asked you
+            to {G1_CONFIRMATIONS[state]}, but you are not sure you heard right.
+
+            Ask them ONE short yes/no question to check, and make it obvious
+            that "yes" is the answer that confirms it. Do not perform anything
+            yet. Speak it out loud: no lists, no emoji, no stage directions.
+            """,
+        )
         self._remember_reply(person_details, question)
-        print(f"[g1_action] state={state} action={ACTION_NONE} (awaiting confirmation)")
+        print(f"[g1_action] state={state} action={ACTION_NONE} "
+              f"(awaiting confirmation) question={question!r}")
         return ApiObject(
             g1_action_payload(question, ACTION_NONE), mode=G1_ACTION_MODE
         )
@@ -132,43 +136,53 @@ class _G1Gesture(ApiBase):
 
     def _spoken_reply_for(self, person_details: PersonDetails,
                           gesture: dict) -> str:
-        """Answer what the person actually said, rather than a written line.
+        return self._generated_line(
+            person_details,
+            f"""
+            You are {gesture["doing"]} right now, because they asked you to.
 
-        Falls back to that written line on any failure. The arm is already
-        committed by the time this runs, so a text model being slow or
-        unavailable must never stop the robot speaking at all.
+            React to what they actually said -- if they mentioned news, a
+            feeling or a reason, respond to that, not just to the gesture. Do
+            not narrate the gesture; they can see it.
+            """,
+        )
+
+    def _generated_line(self, person_details: PersonDetails,
+                        situation: str) -> str:
+        """One short spoken line for this turn, or nothing.
+
+        On failure the robot performs the gesture in silence rather than
+        speaking a canned line. The arm is already committed by the time this
+        runs, and a stock greeting answering an unrelated sentence reads worse
+        than saying nothing at all.
         """
         try:
             with span("g1_gesture.reply_llm"):
                 response = ChatGPT.send_text(
-                    self._reply_prompt(person_details, gesture),
+                    self._prompt(person_details, situation),
                     stream=False,
                     max_tokens=GESTURE_REPLY_MAX_TOKENS,
                 )
-            reply = response.choices[0].message.content.strip()
-            return reply or gesture["reply"]
+            return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[g1_action] reply generation failed, using written line: {e}")
-            return gesture["reply"]
+            print(f"[g1_action] reply generation failed, staying silent: {e}")
+            return ""
 
-    def _reply_prompt(self, person_details: PersonDetails, gesture: dict) -> list:
+    def _prompt(self, person_details: PersonDetails, situation: str) -> list:
         """Build a deliberately small prompt.
 
-        No Neo4j retrieval and no conversation history: the reasoner already
-        fetched this person's record, and a gesture turn is the fastest path
-        the robot has. Everything added here is paid before the arm moves.
+        No Neo4j retrieval and no conversation history: the reasoner has
+        already fetched this person's record, and a gesture turn is the
+        fastest path the robot has. Everything added here is paid before the
+        arm moves.
         """
         system_prompt = f"""
-            You are Iris, a humanoid robot talking with {person_details.get_attribute("name")}.
-            You are {gesture["doing"]} right now, because they asked you to.
-
-            Reply with ONE short spoken sentence, under fifteen words. React to
-            what they actually said -- if they mentioned news, a feeling or a
-            reason, respond to that, not just to the gesture. Do not narrate the
-            gesture; they can see it.
-
-            You are speaking out loud: no lists, no emoji, no stage directions.
-            Warm and natural, the way a person would say it.
+            You are Iris, a humanoid robot talking with
+            {person_details.get_attribute("name")}.
+            {situation}
+            Reply with ONE short spoken sentence, under fifteen words. You are
+            speaking out loud: no lists, no emoji, no stage directions. Warm
+            and natural, the way a person would say it.
         """
         return [
             message_format("system", system_prompt),

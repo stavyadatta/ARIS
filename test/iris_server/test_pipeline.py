@@ -122,8 +122,12 @@ check.equal("asks to be seen", "see" in payload["reply"].lower(), True)
 check.section("g1 gesture api")
 gesture_chunks = list(api_call["g1 wave"](PersonDetails({"state": "g1 wave", "face_id": "f1"})))
 check.equal("one chunk", len(gesture_chunks), 1)
-check.equal("payload", json.loads(gesture_chunks[0].textchunk),
-            {"reply": "Hello! It is nice to meet you.", "action": "wave"})
+# The spoken words are generated per turn from what the person said, so only
+# the action is fixed. An unreachable model yields a silent gesture, never a
+# canned line, so reply is a string either way.
+gesture_payload = json.loads(gesture_chunks[0].textchunk)
+check.equal("action", gesture_payload["action"], "wave")
+check.equal("reply is text", isinstance(gesture_payload["reply"], str), True)
 check.equal("mode", gesture_chunks[0].mode, "g1_action")
 
 unknown = list(api_call["g1 wave"](PersonDetails({"state": "g1 moonwalk"})))
