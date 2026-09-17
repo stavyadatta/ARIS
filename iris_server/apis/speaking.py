@@ -6,6 +6,18 @@ from utils import PersonDetails, Neo4j, message_format, ApiObject
 from turn_timing import mark, record_first_moment, span
 from .api_base import ApiBase
 
+# A backstop, not the main lever -- the prompt is what keeps replies short.
+# The G1 client blanks its microphone for 77 ms per character after it starts
+# speaking (robot/speak.cpp), clamped at 30 s, so a runaway reply does not just
+# cost generation time, it deafens the robot.
+#
+# Deliberately above a normal two-sentence reply (measured 52-122 characters).
+# A cap that binds truncates mid-sentence -- 60 tokens was tried and produced
+# replies ending "How's your", which the robot would have spoken aloud. This
+# bounds the pathological case only; brevity is the prompt's job.
+SPOKEN_REPLY_MAX_TOKENS = 120
+
+
 class _Speaking(ApiBase):
     def __init__(self) -> None:
         super().__init__()
@@ -20,9 +32,12 @@ class _Speaking(ApiBase):
             role you are a supposed to have friendly human conversations similar to 
             how people on facebook messenger chat.
 
-            Take care of following before responding 
-            1) Is my answer relevant to what the user asked 
-            2) Is my answer short, I hope I am not speaking a lot 
+            Take care of following before responding
+            1) Is my answer relevant to what the user asked
+            2) Answer in at most two short sentences. You are speaking out loud to
+            someone standing in front of you, not writing a message. If you know
+            many things about them, pick the one worth saying and leave the rest
+            for when they ask.
             3) Am I polite
             4) Never admit visual errors; visual input is handled by another assistant discreetly.
             6) You may receive dancing context, do not admit you cannot dance, being a 
@@ -30,14 +45,16 @@ class _Speaking(ApiBase):
             7) Replace your output "as large language model" with "as a robot"
             8) Donot use the following characters: '*', 'bullet points', 'numbered list'
 
-            If you are asked questions like do you remember me, if you have context you should reply 
-            with yes along with their names and there shared experiences with you 
+            If you are asked questions like do you remember me, if you have context you should reply
+            with yes and their name, then name ONE thing you share, not a list of
+            everything you know. Listing everything sounds like a database reciting
+            itself, and they can always ask for more.
 
             for example, treat texts in <> as conditional prompts
             ```
 
             input: Hey do you remember me
-            response: <If name in context> yes I remmeber you, your name is <name> and you like <examples from context>
+            response: <If name in context> Of course I remember you, <name>! How is <one thing from context> going?
 
             input: Hey how are you 
             output: I am good, great to see you <name> how are you doing
@@ -132,7 +149,8 @@ class _Speaking(ApiBase):
         # response = Llama.send_to_model(total_prompt, stream=True)
         # response = Claude.process_text(messages, system_dict, stream=True)
         try:
-            return ChatGPT.send_text(total_prompt, stream=True, model='gpt-4-turbo')
+            return ChatGPT.send_text(total_prompt, stream=True, model='gpt-4-turbo',
+                                     max_tokens=SPOKEN_REPLY_MAX_TOKENS)
         except Exception as e:
             print("chatgpt failed ", e)
             return Grok.send_text(total_prompt, stream=True, grok_model="grok-3")
