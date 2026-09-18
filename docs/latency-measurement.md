@@ -326,31 +326,125 @@ Shortening replies (5.1) was cheaper and gained more.
 
 ---
 
-## 8. The robot side matters more than the server
+## 8. The robot side turned out to matter more than the server
 
-Two settings in the robot's own software (`unitree-g1-edu`, not this repo) cost
-more than everything in this document combined:
+Everything above happens inside `iris_server`. Three settings in the robot's
+own software (`unitree-g1-edu`, a separate repo) cost more than all of it
+combined, and none of them were visible in server-side measurements because
+they happen before the request is sent or after the reply is received.
 
-- It waited **1.29 s of silence** before deciding you had stopped talking.
-  Typical for this kind of system is 0.5–0.8 s. Now 0.69 s.
-- After speaking it stops listening for a **guessed** duration — 77 ms per
-  character. On a 455-character reply that was **30 seconds deaf**. Shortening
-  replies (5.1) cut this to about 7 s; retuning the guess to 67 ms/char cut it
-  further.
+### 8.1 It waited 1.29 s of silence before deciding you had stopped talking
 
-That second number is still an estimate. It can be measured exactly: time the
-robot speaking a sentence of known length and set the constant from that.
+`kStopSilenceFrames` was 43 frames. Conversational voice agents use 0.5–0.8 s;
+1.29 s is telephony practice. Every turn paid it before the audio was even
+sent. **Now 0.69 s.**
+
+### 8.2 One second of "stay quiet" in the middle of a conversation
+
+The client recalibrated the microphone at the start of **every turn**, printing
+"stay quiet" and measuring for one second. Nobody is quiet there — the person
+is answering the robot. Their own voice was measured as the background level,
+the threshold was set to twice it, and nothing they said afterwards could ever
+cross it. `waitForSpeechStart` had no timeout, so the client waited forever and
+the robot appeared to stop responding.
+
+Measured across one session with a constant fan, the "background" ran from 235
+to 3250, giving thresholds from 568 to 6499. The low end is the same bug
+inverted: a floor measured during real silence set a threshold so low that the
+detector triggered on nothing and recorded 15 s of noise.
+
+**Fixes.** Calibration happens once per conversation, as the Python client
+already did — startup is the only moment nobody is talking. A `NoiseFloor`
+holds any later measurement within 1.5× of a running estimate, so one spoiled
+second cannot move the threshold far. And the speech wait now gives up after
+10 s and recalibrates instead of hanging.
+
+Replaying the seven real measurements through that rule gives thresholds of
+**1214–2458** instead of 568–6499.
+
+### 8.3 Four seconds of deafness after every gesture
+
+Asking for a second gesture while the robot performed the first got no reply,
+and the request had to be repeated two or three times. It was not mishearing —
+it was not listening. After issuing a turn's output the client slept 3000 ms
+**without the microphone socket even open**, then spent 990 ms calibrating
+before printing "Speak now". Anything said in those four seconds was never
+captured.
+
+The 3000 ms was an arm-motion wait, added on the theory that servo noise
+spoiled the calibration. **Testing on the robot disproved it** — the arm is
+silent and already released by then. It was removed.
+
+### 8.4 Reply length is paid twice
+
+`Speak::estimatedDuration` keeps the microphone shut while the robot talks,
+at `characters × 67 ms + 200 ms`. Every character is therefore paid for twice:
+once generating it, once waiting it out. A 455-character reply cost the full
+30 s clamp. The brevity work in 5.1 cut that to about 7 s — the single largest
+effect of any change in this document, and it came from a prompt, not from
+code.
+
+### 8.5 Measuring playback instead of guessing it
+
+`TtsMaker` reports nothing about playback, and the SDK exposes no
+playback-complete signal — only `TtsMaker`, `GetVolume`, `SetVolume`,
+`PlayStream`, `PlayStop`, `LedControl`. So the wait was a guessed rate, and
+being wrong is costly in both directions: too high and the robot sits deaf
+after it has finished; too low and it transcribes and answers its own voice.
+
+The microphone hears the robot, so the duration is measurable.
+`waitForPlaybackToFinish` listens for playback to start, then for silence, and
+returns when the robot actually stops. The old estimate only bounds the call.
+
+**Status: it never fires, and that is itself a result.** On the first live
+session the log read `Did not hear G1 speak` on **every** turn. Playback is
+never detected, which means the microphone does not pick up G1's own speaker
+above the room's speech threshold.
+
+That is worth stating plainly, because the entire wait exists to stop the
+microphone hearing the robot. If the microphone cannot hear the robot even
+when we are listening for it — same microphone, same threshold — then it
+cannot contaminate the next capture either, and most of the wait was never
+needed.
+
+So the wait is now only what it costs to find that out. The detector gives up
+after 300 ms instead of 1.5 s, because `TtsMaker` returns when playback starts,
+so audible speech would appear within a few frames; longer is spent proving a
+negative.
+
+| deaf window after a reply | |
+|---|---|
+| original blind sleep | 2076–2947 ms |
+| detection, 1.5 s give-up | 1500 ms |
+| **detection, 300 ms give-up** | **300 ms** |
+
+The mechanism is kept rather than deleted so that a robot whose microphone can
+hear itself still gets a correct, measured wait. On this one it costs 300 ms to
+learn there is nothing to wait for.
+
+**The risk, stated honestly.** If G1's playback is ever audible to its own
+microphone — a louder volume, a smaller room, a different mount — the robot
+will transcribe and answer itself. The symptom is unmistakable: replies to
+things nobody said. If that appears, raise `kPlaybackStartFrames` back up; the
+detector will then find the playback and wait for it properly.
 
 ---
 
 ## 9. Still open
 
-- Nobody knows the real mix of gesture, spoken and misheard turns in normal use.
-  Every turn now records its route, so a day of real use would settle which of
-  these numbers actually matters.
-- Iris sometimes says it cannot see a person who has not moved. Undiagnosed. The
-  log line `[face_id] none ... recognized_votes=[...]` was added for exactly this
-  and will show whether camera frames were rejected or simply not recognised.
-- Iris and the Pepper robot share one database. Pepper's old replies appear in
-  Iris's memory and Iris sometimes copies them. Not fixed, because cleaning it
-  would damage Pepper's memory too.
+- **`kMillisecondsPerCharacter = 67` is still an unmeasured guess.** It no
+  longer sets the wait — it only bounds it — so being wrong costs little. It
+  would become a measurement the moment playback detection fires on any robot.
+- **The camera aims about 20° below a standing person's face.** Anyone
+  crouching or seated lands at the top edge of the frame with their crown
+  clipped, which costs roughly 0.1 of detection score. Lowering `det_thresh`
+  to 0.5 buys margin; tilting the D435i up would remove the cause.
+- **`_get_camera_matrix` still hardcodes Pepper's OV5640 field of view**
+  (56.3°/43.7°) while the G1 streams a D435i (~69°/42°), so the side-face
+  check runs on the wrong intrinsics. Harmless at current angles, latent.
+- **Nobody knows the real mix** of gesture, spoken and misheard turns in normal
+  use. Every turn now records its route, so a day of real use would settle
+  which of these numbers actually matters.
+- **Iris and the Pepper robot share one database.** Pepper's old replies appear
+  in Iris's memory and Iris sometimes copies them. Not fixed: cleaning it would
+  damage Pepper's memory too.
