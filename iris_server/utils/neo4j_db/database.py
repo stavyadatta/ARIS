@@ -320,6 +320,12 @@ class _Neo4j:
     def add_message_to_person(self, person_details: PersonDetails):
         from core_api import ChatGPT
 
+        # Guarded here rather than at each of the three callers, so a turn with
+        # nobody to attribute it to cannot be stored by any route.
+        if person_details.is_guest():
+            print("[guest] nobody recognised; not storing this turn")
+            return
+
         add_llm_msg_query = """ 
             MATCH (p:Person {face_id:$face_id})-[:MESSAGE]->(latestMessage:Message)
             WITH p, latestMessage

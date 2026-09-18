@@ -19,6 +19,16 @@ class PersonDetails:
     def get_attribute(self, field: str):
         return self.person_dict.get(field, [])
 
+    def is_guest(self) -> bool:
+        """True when the camera saw nobody, so nothing may be stored.
+
+        Every record in Neo4j is keyed on face_id -- the person, their
+        messages, their relationships. Without one there is nobody to attribute
+        the turn to, so a guest converses and gestures normally and is simply
+        not remembered.
+        """
+        return not self.get_attribute("face_id")
+
     def get_latest_user_message(self):
         return self.latest_usr_msg
 
