@@ -61,6 +61,21 @@ G1_GESTURES = {
         "action": "right_hand_on_heart",
         "doing": "placing a hand on your heart",
     },
+    # Whole-body routines the G1 client runs by name rather than by numeric id
+    # (ExecuteAction(custom_name)). These move far more of the robot than the
+    # gestures above, so the client still gates them behind its own allow list.
+    "g1 waist drum dance": {
+        "action": "waist_drum_dance",
+        "doing": "dancing a waist drum dance for them",
+    },
+    "g1 spin discs": {
+        "action": "spin_discs",
+        "doing": "spinning discs like a DJ for them",
+    },
+    "g1 throw money": {
+        "action": "throw_money",
+        "doing": "throwing money in the air for them",
+    },
 }
 
 G1_CONFIRMATIONS = {

@@ -24,7 +24,7 @@ from .api_base import ApiBase
 # Keep in step with the gestures G1_GESTURES exposes in g1_gesture.py. Only
 # the ones worth offering unprompted: the blow-kiss pair reads oddly outside
 # a farewell.
-OFFERABLE_GESTURES = "wave, shake hands, or give you a high five"
+OFFERABLE_GESTURES = "wave, shake hands, give you a high five, or dance for you"
 
 UNSUPPORTED_ACTION_REPLIES = (
     f"I have not learned that movement yet. I can {OFFERABLE_GESTURES}.",

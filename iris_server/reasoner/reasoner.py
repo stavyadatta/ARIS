@@ -115,6 +115,12 @@ class _Reasoner:
             return "g1 handshake"
         if "wave" in text:
             return "g1 wave"
+        if "dance" in text:
+            return "g1 waist drum dance"
+        if "dj" in _words_in(text) or "spin disc" in text or "play records" in text:
+            return "g1 spin discs"
+        if "throw money" in text or "throw cash" in text or "make it rain" in text:
+            return "g1 throw money"
         return None
 
     def _uncertain_g1_gesture(self, transcription: str) -> Optional[str]:
