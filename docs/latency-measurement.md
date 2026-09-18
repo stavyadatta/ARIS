@@ -384,7 +384,7 @@ once generating it, once waiting it out. A 455-character reply cost the full
 effect of any change in this document, and it came from a prompt, not from
 code.
 
-### 8.5 Measuring playback instead of guessing it
+### 8.5 Measuring playback instead of guessing it — and the mistake that followed
 
 `TtsMaker` reports nothing about playback, and the SDK exposes no
 playback-complete signal — only `TtsMaker`, `GetVolume`, `SetVolume`,
@@ -392,49 +392,64 @@ playback-complete signal — only `TtsMaker`, `GetVolume`, `SetVolume`,
 being wrong is costly in both directions: too high and the robot sits deaf
 after it has finished; too low and it transcribes and answers its own voice.
 
-The microphone hears the robot, so the duration is measurable.
+The microphone hears the robot, so in principle the duration is measurable.
 `waitForPlaybackToFinish` listens for playback to start, then for silence, and
-returns when the robot actually stops. The old estimate only bounds the call.
+returns when the robot actually stops.
 
-**Status: it never fires, and that is itself a result.** On the first live
-session the log read `Did not hear G1 speak` on **every** turn. Playback is
-never detected, which means the microphone does not pick up G1's own speaker
-above the room's speech threshold.
+**It never fires.** The log reads `Did not hear G1 speak` on every turn: G1's
+microphone does not pick up its own speaker above the room's speech threshold.
 
-That is worth stating plainly, because the entire wait exists to stop the
-microphone hearing the robot. If the microphone cannot hear the robot even
-when we are listening for it — same microphone, same threshold — then it
-cannot contaminate the next capture either, and most of the wait was never
-needed.
+**Then we drew the wrong conclusion from that.** The reasoning was: detection
+never fires, so the 1.5 s spent establishing that is waste — cut the window to
+300 ms. The first half was right. The second was not, because **the listening
+was also the wait.** The "not heard" path returns without waiting at all, so
+those 50 frames were the only thing keeping the microphone shut while G1 spoke.
+Cutting them did not trim a measurement, it removed the wait. The microphone
+reopened mid-sentence and the robot became slow to answer.
 
-So the wait is now only what it costs to find that out. The detector gives up
-after 300 ms instead of 1.5 s, because `TtsMaker` returns when playback starts,
-so audible speech would appear within a few frames; longer is spent proving a
-negative.
+It was caught by running two consecutive builds on the robot and comparing
+them. No server-side measurement could have found it: none of this is visible
+from `iris_server`.
+
+A second attempt reconstructed the same 1.5 s from two named constants — how
+long to look, and how long to wait once the answer is negative. Cleaner on
+paper, and it matched on total, but it differed from the tested build in socket
+lifetime and in what playback it could still detect. It was reverted too. The
+shipped version is the one that was actually run.
 
 | deaf window after a reply | |
 |---|---|
 | original blind sleep | 2076–2947 ms |
-| detection, 1.5 s give-up | 1500 ms |
-| **detection, 300 ms give-up** | **300 ms** |
+| **shipped: detection window, which is also the wait** | **1500 ms** |
+| tried and reverted: 300 ms window | 300 ms — too short |
 
-The mechanism is kept rather than deleted so that a robot whose microphone can
-hear itself still gets a correct, measured wait. On this one it costs 300 ms to
-learn there is nothing to wait for.
+**Two lessons, both paid for.**
 
-**The risk, stated honestly.** If G1's playback is ever audible to its own
-microphone — a louder volume, a smaller room, a different mount — the robot
-will transcribe and answer itself. The symptom is unmistakable: replies to
-things nobody said. If that appears, raise `kPlaybackStartFrames` back up; the
-detector will then find the playback and wait for it properly.
+*A wait can hide inside something that looks like a measurement.* The 1.5 s
+was doing real work under a name that described something else. Before
+deleting code that "does nothing", check what it does by accident.
+
+*A version you have run beats a reconstruction you believe is equivalent.*
+The rebuild was better code and was still wrong, because the differences that
+mattered — socket lifetime, detection coverage — were ones that could only be
+reasoned about, not verified without hardware.
+
+**The risk that remains.** If G1's playback is ever audible to its own
+microphone — louder volume, smaller room, different mount — the robot will
+transcribe and answer itself. The symptom is unmistakable: replies to things
+nobody said. The detector is still in place, so it would then measure playback
+properly and wait for it.
 
 ---
 
 ## 9. Still open
 
-- **`kMillisecondsPerCharacter = 67` is still an unmeasured guess.** It no
-  longer sets the wait — it only bounds it — so being wrong costs little. It
-  would become a measurement the moment playback detection fires on any robot.
+- **`kMillisecondsPerCharacter = 67` is still an unmeasured guess.** It only
+  bounds the wait rather than setting it, so being wrong costs little.
+- **Nobody has established whether G1's microphone can hear its own speaker at
+  all**, or merely hears it below the speech threshold. A probe that logs raw
+  RMS during playback, instead of a yes/no against the threshold, would settle
+  it — and would say how much margin the current 1.5 s is really running on.
 - **The camera aims about 20° below a standing person's face.** Anyone
   crouching or seated lands at the top edge of the frame with their crown
   clipped, which costs roughly 0.1 of detection score. Lowering `det_thresh`
