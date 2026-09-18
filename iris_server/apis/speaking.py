@@ -130,11 +130,8 @@ class _Speaking(ApiBase):
 
     def _build_context(self, person_details: PersonDetails):
         """Gather everything the reply prompt needs. Reads no reasoner output."""
-        latest_msg = person_details.get_latest_user_message()
-        if person_details.is_guest():
-            return [latest_msg], self._guest_prompt() + [latest_msg]
-
         face_id = person_details.get_attribute("face_id")
+        latest_msg = person_details.get_latest_user_message()
         with span("speaking.person_messages"):
             messages = Neo4j.get_person_messages(latest_msg, face_id)
 
@@ -147,23 +144,6 @@ class _Speaking(ApiBase):
         )
 
         return messages, system_dict + messages
-
-    def _guest_prompt(self) -> list:
-        """Talk to somebody Iris cannot see and will not remember.
-
-        No name, no history and no relationships to draw on, so the persona
-        prompt's whole "do you remember me" apparatus would only invite Iris
-        to invent things about a stranger.
-        """
-        return [message_format("system", """
-            You are Iris, a friendly humanoid robot, talking with someone you
-            cannot see clearly and do not know by name. Be warm and helpful.
-
-            Answer in at most two short sentences. You are speaking out loud,
-            so no lists, no emoji. Do not claim to remember them or to know
-            anything about them, and do not comment on not being able to see
-            them -- just talk with them.
-        """)]
 
     def _request_completion(self, total_prompt: list):
         # response = Llama.send_to_model(total_prompt, stream=True)

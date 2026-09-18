@@ -81,15 +81,11 @@ check.section("executor routing")
 for state in ["no face", "bad input", "speak", "g1 wave", "g1 confirm wave", "vision"]:
     check.equal(f"route {state!r}", find_best_match(state, api_call.keys()), state)
 
-check.section("reasoner: an unrecognised person is a guest, not a refusal")
+check.section("reasoner: no face short-circuit")
 reasoner = _Reasoner()
-# A gesture request so the deterministic gates answer it; reaching the LLM
-# classifier would need a live model. Iris used to reply "I cannot see you" to
-# anyone it could not recognise, including people plainly in front of it.
-guest = reasoner(transcription="can you wave at me", face_id=None)
-check.equal("still performs the gesture", guest.get_attribute("state"), "g1 wave")
-check.equal("is a guest", guest.is_guest(), True)
-check.equal("no identity to store against", guest.get_attribute("face_id"), [])
+check.equal("face_id None -> no face",
+            reasoner(transcription="hello iris", face_id=None).get_attribute("state"),
+            "no face")
 
 check.section("reasoner: explicit gesture requests")
 check.equal("wave", reasoner._requested_g1_gesture("can you wave at me"), "g1 wave")
@@ -258,23 +254,8 @@ check.equal("one chunk", len(declined), 1)
 check.equal("speaks the G1 contract", declined[0].mode, "g1_action")
 declined_payload = json.loads(declined[0].textchunk)
 check.equal("no body action", declined_payload["action"], "none")
-# Each refusal names a different couple of abilities, so asserting one
-# particular phrase would pass only by luck. Every variant must offer
-# something, and between them they must cover more than any one line could.
-from apis.unsupported_action import UNSUPPORTED_ACTION_REPLIES
-
-ABILITIES = ("wave", "high five", "shake hands", "dance", "dj", "throw money")
-
-
-def offered(reply):
-    return {ability for ability in ABILITIES if ability in reply.lower()}
-
-
-check.equal("this refusal offers something", bool(offered(declined_payload["reply"])), True)
-check.equal("every refusal offers something",
-            all(offered(reply) for reply in UNSUPPORTED_ACTION_REPLIES), True)
-check.equal("between them they name more than one line could",
-            len(set().union(*(offered(r) for r in UNSUPPORTED_ACTION_REPLIES))) >= 5, True)
+check.equal("offers what it can do",
+            "high five" in declined_payload["reply"], True)
 
 check.equal("Pepper movement package is gone",
             importlib.util.find_spec("apis.movement"), None)

@@ -122,7 +122,7 @@ class _G1Gesture(ApiBase):
         question = self._generated_line(
             person_details,
             f"""
-            You think {self._who(person_details)} may have asked you
+            You think {person_details.get_attribute("name")} may have asked you
             to {G1_CONFIRMATIONS[state]}, but you are not sure you heard right.
 
             Ask them ONE short yes/no question to check, and make it obvious
@@ -183,15 +183,6 @@ class _G1Gesture(ApiBase):
             print(f"[g1_action] reply generation failed, staying silent: {e}")
             return ""
 
-    def _who(self, person_details: PersonDetails) -> str:
-        """Name the person, or say plainly that Iris does not know them.
-
-        A guest has no name, and interpolating the empty value left the prompt
-        reading "talking with []", which invites the model to fill the blank.
-        """
-        name = person_details.get_attribute("name")
-        return str(name) if name else "someone whose name you do not know"
-
     def _prompt(self, person_details: PersonDetails, situation: str) -> list:
         """Build a deliberately small prompt.
 
@@ -201,7 +192,8 @@ class _G1Gesture(ApiBase):
         arm moves.
         """
         system_prompt = f"""
-            You are Iris, a humanoid robot talking with {self._who(person_details)}.
+            You are Iris, a humanoid robot talking with
+            {person_details.get_attribute("name")}.
             {situation}
             Reply with ONE short spoken sentence, under fifteen words. You are
             speaking out loud: no lists, no emoji, no stage directions. Warm

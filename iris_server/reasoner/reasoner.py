@@ -8,6 +8,7 @@ from core_api import Llama, ChatGPT, Grok
 from turn_timing import mark, span
 from .prompt import action_reasoner_prompt
 
+STATE_NO_FACE = "no face"
 STATE_SPEAK = "speak"
 STATE_BAD_INPUT = "bad input"
 NO_CHANGE_RESPONSES = ("no change", "no change.")
@@ -265,17 +266,15 @@ class _Reasoner:
             :param face_id: To identify faces for doing an action
             :param img: for the VLM to get more context
         """
+        if face_id is None:
+            # No recognisable face in frame. This is a *vision* failure, so
+            # ask to be seen rather than falling through to "bad input",
+            # which speaks an audio retry request and misleads the person.
+            mark("classifier", "no_face")
+            return PersonDetails({"state": STATE_NO_FACE})
         try:
-            if face_id is None:
-                # Nobody recognised. Iris still listens and still acts; it
-                # simply has no one to attribute the turn to, so the turn is
-                # not stored. Refusing to answer instead made it tell people
-                # standing in front of it that it could not see them.
-                mark("guest", True)
-                person_details = PersonDetails({"state": STATE_SPEAK})
-            else:
-                with span("reasoner.person_record"):
-                    person_details = self._person_record(face_id)
+            with span("reasoner.person_record"):
+                person_details = self._person_record(face_id)
             user_prompt = self._developing_user_prompt(transcription)
 
             with span("reasoner.gates"):
