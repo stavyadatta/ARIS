@@ -21,16 +21,21 @@ from utils import (
 from .api_base import ApiBase
 
 
-# Keep in step with the gestures G1_GESTURES exposes in g1_gesture.py. Only
-# the ones worth offering unprompted: the blow-kiss pair reads oddly outside
-# a farewell.
-OFFERABLE_GESTURES = "wave, shake hands, give you a high five, or dance for you"
-
+# Each refusal names a different couple of things Iris can do instead of
+# reciting the whole repertoire. There are eleven gestures; listing them all
+# would be a twenty-second menu, and this reply is spoken aloud -- every
+# character costs speaking time and then a matching stretch of microphone
+# blanking on the client before it can hear an answer. Rotating keeps each
+# refusal short while letting somebody discover more across a few attempts.
+#
+# Deliberately never offered: a hug, which reads oddly volunteered; hand on
+# heart, which is a response to sentiment rather than something to propose;
+# and the blow-kiss pair, which only makes sense in a farewell.
 UNSUPPORTED_ACTION_REPLIES = (
-    f"I have not learned that movement yet. I can {OFFERABLE_GESTURES}.",
-    f"Sorry, that one is beyond me for now. I can {OFFERABLE_GESTURES}.",
-    f"I cannot do that movement yet, I am afraid. I can {OFFERABLE_GESTURES}.",
-    f"That is not something I know how to do yet. I can {OFFERABLE_GESTURES}.",
+    "I have not learned that movement yet. I can wave or give you a high five.",
+    "Sorry, that one is beyond me for now. Ask me to dance, though.",
+    "I cannot do that one yet, I am afraid. I can shake hands, or DJ for you.",
+    "That is not something I know how to do. Ask me to throw money, I am good at that.",
 )
 
 
