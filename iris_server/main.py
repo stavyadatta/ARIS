@@ -4,7 +4,6 @@ from concurrent import futures
 from threading import Thread
 
 from core_api import FaceRecognition, WhisperSpeech2Text
-from core_api.kokoro_tts import KokoroTts
 from media_manager import MediaManager, IMAGE_QUEUE_LEN
 from secondary_channel import SecondaryGRPC
 import grpc_communication.grpc_pb2_grpc as pb2_grpc
@@ -22,7 +21,6 @@ def warm_up_models():
     """
     try:
         WhisperSpeech2Text.warm_up()
-        KokoroTts.warm_up()
         FaceRecognition.warm_up()
         print("Models warmed up")
     except Exception as e:
