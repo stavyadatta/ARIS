@@ -10,6 +10,7 @@ from .g1_action import (
     G1_ACTION_ERROR_MODE,
     G1_ACTION_MODE,
     g1_action_payload,
+    g1_spoken_payload,
 )
 
 Neo4j = _Neo4j()
@@ -34,5 +35,6 @@ __all__ = [
     "PersonDetails",
     "SecondaryDetails",
     "g1_action_payload",
+    "g1_spoken_payload",
     "message_format",
 ]
