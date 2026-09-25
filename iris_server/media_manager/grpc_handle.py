@@ -32,17 +32,24 @@ G1_LISTENING_FALLBACKS = (
     "Sorry, I did not hear you clearly enough. Could you try that again for me, please?",
 )
 
-# Said aloud when something inside the server breaks. The person in front of the
-# robot did nothing wrong and cannot act on a stack trace, so Iris apologises in
-# her own voice and invites a retry; the real detail goes to the log.
+# Said aloud when something inside the server breaks -- an exception, not a
+# misheard sentence. Deliberately different in kind from G1_LISTENING_FALLBACKS
+# above: those ask for a repeat, because a repeat genuinely helps when the robot
+# mishears. Repeating yourself does nothing about an exception, so these say so
+# and point at a human instead. Telling someone to try again when trying again
+# cannot work leaves them doing it forever.
 #
-# Rotating, for the same reason the refusals rotate: hearing one identical
-# sentence twice makes a fault obvious, and these are most likely to repeat.
+# Rotating, for the same reason the refusals rotate: these are the replies most
+# likely to repeat, and hearing one sentence twice makes the fault obvious.
 G1_ERROR_REPLIES = (
-    "I am sorry, something went wrong on my side just then. Could you try me again?",
-    "Apologies, I lost my train of thought for a moment. Would you mind saying that again?",
-    "Sorry, something tripped me up there, and it was not you. Could you give me one more go?",
-    "Sorry about that, my thinking stumbled. Could you repeat that for me?",
+    "I am sorry, something has gone wrong inside me. This one needs my "
+    "engineers to take a look, so please let the team know.",
+    "Apologies, my software has run into a problem I cannot fix myself. "
+    "Would you mind telling someone from the team about it?",
+    "Sorry, something is broken on my side and trying again will not help. "
+    "Please ask the team to check my logs.",
+    "Sorry, I am not working properly at the moment, and it is not "
+    "because of anything you said. Someone technical will need to look at me.",
 )
 
 IMAGE_QUEUE_LEN = 50

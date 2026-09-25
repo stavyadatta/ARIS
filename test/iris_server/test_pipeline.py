@@ -229,11 +229,24 @@ from media_manager.grpc_handle import G1_ERROR_REPLIES
 
 check.equal("several to rotate between", len(G1_ERROR_REPLIES) > 1, True)
 for reply in G1_ERROR_REPLIES:
-    short = reply[:34] + "..."
+    short = reply[:32] + "..."
     check.equal(f"apologises: {short}",
                 "sorry" in reply.lower() or "apolog" in reply.lower(), True)
-    check.equal(f"invites a retry: {short}", "?" in reply, True)
+    # An exception is not fixed by the listener repeating themselves. These
+    # must send them to a person, not into a retry loop -- which is what
+    # separates them from G1_LISTENING_FALLBACKS.
+    check.equal(f"points at a human: {short}",
+                any(w in reply.lower() for w in
+                    ("team", "engineer", "someone", "technical")), True)
     check.equal(f"never says 'error': {short}", "error" in reply.lower(), False)
+
+# And the distinction is real, not accidental: the listening fallbacks ask for
+# a repeat and must not send anyone looking for an engineer.
+from media_manager.grpc_handle import G1_LISTENING_FALLBACKS
+
+for reply in G1_LISTENING_FALLBACKS:
+    check.equal(f"listening fallback asks for a repeat: {reply[:32]}...",
+                any(w in reply.lower() for w in ("again", "repeat", "once more")), True)
 check.equal("the drawn reply is one of them",
             error_payload["reply"] in G1_ERROR_REPLIES, True)
 
