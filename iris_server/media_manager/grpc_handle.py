@@ -32,6 +32,19 @@ G1_LISTENING_FALLBACKS = (
     "Sorry, I did not hear you clearly enough. Could you try that again for me, please?",
 )
 
+# Said aloud when something inside the server breaks. The person in front of the
+# robot did nothing wrong and cannot act on a stack trace, so Iris apologises in
+# her own voice and invites a retry; the real detail goes to the log.
+#
+# Rotating, for the same reason the refusals rotate: hearing one identical
+# sentence twice makes a fault obvious, and these are most likely to repeat.
+G1_ERROR_REPLIES = (
+    "I am sorry, something went wrong on my side just then. Could you try me again?",
+    "Apologies, I lost my train of thought for a moment. Would you mind saying that again?",
+    "Sorry, something tripped me up there, and it was not you. Could you give me one more go?",
+    "Sorry about that, my thinking stumbled. Could you repeat that for me?",
+)
+
 IMAGE_QUEUE_LEN = 50
 
 # Chunks the executor marks 'default' are raw streamed speech; every other
@@ -160,6 +173,20 @@ class MediaManager(MediaServiceServicer):
             payload = g1_spoken_payload(reply, ACTION_NONE)
         return (payload, G1_ACTION_MODE)
 
+    def _apology_chunk(self):
+        """A spoken apology, in the ordinary reply contract.
+
+        Errors used to travel as mode="error" carrying a stack trace, which the
+        client could not voice -- the robot said the word "error" at whoever was
+        standing there. A fault is not the person's fault and not something they
+        can act on, so Iris says sorry in her own voice and the detail stays in
+        the log.
+        """
+        reply = random.choice(G1_ERROR_REPLIES)
+        print(f"[g1_action] apologising; action={ACTION_NONE}")
+        with span("kokoro_tts"):
+            return (g1_spoken_payload(reply, ACTION_NONE), G1_ACTION_MODE)
+
     def _listening_fallback_chunk(self, log_reason):
         """Ask for a repeat without inventing a physical action."""
         reply = random.choice(G1_LISTENING_FALLBACKS)
@@ -231,7 +258,7 @@ class MediaManager(MediaServiceServicer):
         except Exception as e:
             print(f"Error processing audio: {e}")
             traceback.print_exc()
-            yield ("error", "error")
+            yield self._apology_chunk()
 
     def _save_request_audio(self, request):
         self.save_audio_to_file(
@@ -268,10 +295,9 @@ class MediaManager(MediaServiceServicer):
             if image is None:
                 print("Is the image coming as None")
                 mark("outcome", "no_image")
-                yield TextChunk(
-                    mode="error",
-                    text="The image came out as None"
-                )
+                print("[g1_action] image decode failed; apologising aloud")
+                payload, mode = self._apology_chunk()
+                yield TextChunk(mode=mode, text=payload)
                 return
 
             pipeline_response = self._getting_response(
@@ -290,10 +316,8 @@ class MediaManager(MediaServiceServicer):
             mark("outcome", "error")
             # This is a generator: a returned value is discarded, so the
             # client would be handed a silent stream instead of the error.
-            yield TextChunk(
-                mode="error",
-                text=f"Some error occured {e}"
-            )
+            payload, mode = self._apology_chunk()
+            yield TextChunk(mode=mode, text=payload)
 
     def StreamImages(self, request_iterator, context):
         """

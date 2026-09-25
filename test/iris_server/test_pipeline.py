@@ -212,11 +212,30 @@ check.equal("bbox queue emptied", len(clear_manager.image_queue), 0)
 check.equal("clearing an empty queue still succeeds",
             clear_manager.ClearQueue(None, None).removed, True)
 
-check.section("ProcessAudioImg reports failures to the client")
+check.section("a server fault is apologised for aloud, not reported as 'error'")
+# Failures used to travel as mode="error" carrying a stack trace, which the
+# client could not voice -- the robot said the word "error" at whoever was
+# standing in front of it. A fault is not the listener's fault and not
+# something they can act on, so it now speaks in the ordinary reply contract.
 error_chunks = list(manager.ProcessAudioImg(object(), None))
 check.equal("one chunk", len(error_chunks), 1)
-check.equal("mode is error", error_chunks[0].mode, "error")
-check.equal("text explains", error_chunks[0].text.startswith("Some error occured"), True)
+check.equal("speaks the G1 contract", error_chunks[0].mode, "g1_action")
+error_payload = json.loads(error_chunks[0].text)
+check.equal("no body action", error_payload["action"], "none")
+# Check every reply, not the one this run happened to draw. The code picks at
+# random, so asserting on a single sample is a test that passes most of the
+# time -- which is worse than one that fails.
+from media_manager.grpc_handle import G1_ERROR_REPLIES
+
+check.equal("several to rotate between", len(G1_ERROR_REPLIES) > 1, True)
+for reply in G1_ERROR_REPLIES:
+    short = reply[:34] + "..."
+    check.equal(f"apologises: {short}",
+                "sorry" in reply.lower() or "apolog" in reply.lower(), True)
+    check.equal(f"invites a retry: {short}", "?" in reply, True)
+    check.equal(f"never says 'error': {short}", "error" in reply.lower(), False)
+check.equal("the drawn reply is one of them",
+            error_payload["reply"] in G1_ERROR_REPLIES, True)
 
 check.section("silence is deliberate, not a failure to answer")
 # "be quiet" used to reach the listening fallback, which made Iris say
