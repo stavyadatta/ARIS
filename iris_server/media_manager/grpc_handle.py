@@ -16,6 +16,7 @@ from utils import (
     ACTION_SCRATCH_HEAD,
     G1_ACTION_MODE,
     g1_action_payload,
+    g1_spoken_payload,
 )
 from grpc_pb2 import TextChunk, FaceBoundingBox, QueueRemoval
 from grpc_pb2_grpc import MediaServiceServicer
@@ -155,14 +156,18 @@ class MediaManager(MediaServiceServicer):
 
     def _speech_chunk(self, reply):
         print(f"\n[g1_action] action={ACTION_NONE}")
-        return (g1_action_payload(reply, ACTION_NONE), G1_ACTION_MODE)
+        with span("kokoro_tts"):
+            payload = g1_spoken_payload(reply, ACTION_NONE)
+        return (payload, G1_ACTION_MODE)
 
     def _listening_fallback_chunk(self, log_reason):
         """Ask for a repeat without inventing a physical action."""
         reply = random.choice(G1_LISTENING_FALLBACKS)
         print(f"\n[g1_action] {log_reason}; using fallback")
         print(f"[g1_action] action={ACTION_SCRATCH_HEAD}")
-        return (g1_action_payload(reply, ACTION_SCRATCH_HEAD), G1_ACTION_MODE)
+        with span("kokoro_tts"):
+            payload = g1_spoken_payload(reply, ACTION_SCRATCH_HEAD)
+        return (payload, G1_ACTION_MODE)
 
     def _spoken_reply_chunk(self, reply):
         if not reply.strip():
