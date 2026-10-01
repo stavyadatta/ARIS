@@ -1,5 +1,6 @@
 import os
 import random
+from typing import NamedTuple, Optional
 import cv2
 import time
 from queue import Empty as QueueEmpty
@@ -15,6 +16,7 @@ from utils import (
     ACTION_NONE,
     ACTION_SCRATCH_HEAD,
     G1_ACTION_MODE,
+    PersonDetails,
     g1_action_payload,
 )
 from grpc_pb2 import TextChunk, FaceBoundingBox, QueueRemoval
@@ -58,6 +60,8 @@ IMAGE_QUEUE_LEN = 50
 SPEECH_CHUNK_MODE = 'default'
 
 VISION_STATE = "vision"
+NO_FACE_STATE = "no face"
+UNCONFIRMED_FACE_STATE = "face unconfirmed"
 
 # Whisper returns a bare "." or "" on silence. A placeholder word keeps the
 # reasoner on its normal path, where the prompt classifies it as bad input.
@@ -75,6 +79,12 @@ SAMPLE_WIDTHS_BY_ENCODING = {
 }
 
 EMPTY_FACE_BBOX = FaceBoundingBox(x1=0, y1=0, x2=0, y2=0)
+
+
+class ResolvedFace(NamedTuple):
+    """Who the camera thinks is there, and whether that deserves trust."""
+    face_id: Optional[str]
+    verified: bool
 
 class MediaManager(MediaServiceServicer):
     def __init__(self, image_queue, audio_save=False):
@@ -132,24 +142,26 @@ class MediaManager(MediaServiceServicer):
         """Vote over recently streamed frames, then retry on this request's."""
         face_id = FaceRecognition.get_most_frequent_face_id()
         if face_id is not None:
-            return face_id
+            return ResolvedFace(face_id, verified=True)
 
         # The voting queues only hold StreamImages frames, which may be
         # absent or all rejected. The frame attached to this request is a
         # second chance, and is the one the person was actually in front of
-        # while speaking.
+        # while speaking. It skips the size and side-face checks, so a match
+        # from it is a guess: a clipped face can land on the wrong person.
         face_id = FaceRecognition.recognize_face_relaxed(image)
         if face_id is not None:
-            print(f"[face_id] {face_id} via request frame")
-        return face_id
+            print(f"[face_id] {face_id} via request frame (unverified)")
+        return ResolvedFace(face_id, verified=False)
 
     def _resolve_face_id(self, image, skip_face_validation):
         if skip_face_validation:
-            face_id = FaceRecognition.recognize_face_relaxed(image)
+            # The client asked for relaxed matching, so it vouches for it.
+            face = ResolvedFace(FaceRecognition.recognize_face_relaxed(image), verified=True)
         else:
-            face_id = self._face_id_from_stream_votes(image)
-        self._log_face_id(face_id, skip_face_validation)
-        return face_id
+            face = self._face_id_from_stream_votes(image)
+        self._log_face_id(face.face_id, skip_face_validation)
+        return face
 
     def _log_face_id(self, face_id, skip_face_validation):
         """Name the recognition path, since a miss silences the LLM entirely.
@@ -166,9 +178,15 @@ class MediaManager(MediaServiceServicer):
             f"recognized_votes={list(FaceRecognition.face_id_queue)}"
         )
 
-    def _reason_about(self, transcription, face_id, image):
-        person_details = Reasoner(transcription, face_id)
-        if person_details.get_attribute("state") == VISION_STATE:
+    def _reason_about(self, transcription, face, image):
+        if face.face_id is not None and not face.verified:
+            # Do not read or write a person's record on a guessed identity,
+            # and do not greet them by a name that may belong to someone else.
+            print(f"[face_id] {face.face_id} unconfirmed; asking before assuming")
+            return PersonDetails({"state": UNCONFIRMED_FACE_STATE})
+        person_details = Reasoner(transcription, face.face_id)
+        if person_details.get_attribute("state") in (
+                VISION_STATE, NO_FACE_STATE):
             person_details.set_image(image)
         print(f"Resolved person state: {person_details.get_attribute('state')}")
         return person_details
@@ -242,10 +260,10 @@ class MediaManager(MediaServiceServicer):
             with span("write_debug_frame"):
                 cv2.imwrite(CURRENT_FRAME_PATH, image)
             with span("resolve_face_id"):
-                face_id = self._resolve_face_id(image, skip_face_validation)
+                face = self._resolve_face_id(image, skip_face_validation)
 
             with span("reason"):
-                person_details = self._reason_about(transcription, face_id, image)
+                person_details = self._reason_about(transcription, face, image)
             mark("route", person_details.get_attribute("state"))
 
             print("Executor response:")

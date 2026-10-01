@@ -54,7 +54,7 @@ from collections import deque
 
 from apis import api_call
 from executor.executor import find_best_match
-from media_manager.grpc_handle import MediaManager
+from media_manager.grpc_handle import MediaManager, ResolvedFace
 from reasoner.reasoner import _Reasoner
 from utils import PersonDetails, ApiObject, g1_action_payload
 import utils
@@ -119,6 +119,42 @@ payload = json.loads(chunks[0].textchunk)
 check.equal("no action", payload["action"], "none")
 check.equal("asks to be seen", "see" in payload["reply"].lower(), True)
 
+class FakePersonDetector:
+    """Stands in for YOLO: reports a body, no body, or a fault."""
+
+    def __init__(self, outcome):
+        self.outcome = outcome
+
+    def detect_and_crop_person(self, image):
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+def no_face_reply(detector, image):
+    no_face_module = sys.modules["apis.no_face"]
+    no_face_module.PersonDetectionCropper = detector
+    details = PersonDetails({"state": "no face"})
+    details.set_image(image)
+    chunks = list(api_call["no face"](details))
+    return json.loads(chunks[0].textchunk)["reply"]
+
+
+check.section("no face api: body in shot")
+frame = np.zeros((480, 640, 3), dtype=np.uint8)
+body_replies = sys.modules["apis.no_face"].BODY_ONLY_REPLIES
+check.equal("body without face says so",
+            no_face_reply(FakePersonDetector(frame), frame) in body_replies, True)
+check.equal("body-only reply never claims who it is",
+            all("who you are" in r or "face" in r for r in body_replies), True)
+no_face_replies = sys.modules["apis.no_face"].NO_FACE_REPLIES
+check.equal("nobody in shot asks to be seen",
+            no_face_reply(FakePersonDetector(None), frame) in no_face_replies, True)
+check.equal("detector fault still answers",
+            no_face_reply(FakePersonDetector(RuntimeError("cuda")), frame) in no_face_replies, True)
+check.equal("missing frame still answers",
+            no_face_reply(FakePersonDetector(frame), None) in no_face_replies, True)
+
 check.section("g1 gesture api")
 gesture_chunks = list(api_call["g1 wave"](PersonDetails({"state": "g1 wave", "face_id": "f1"})))
 check.equal("one chunk", len(gesture_chunks), 1)
@@ -162,16 +198,29 @@ check.equal("no chunks falls back", len(empty), 1)
 check.equal("no chunks scratches head", json.loads(empty[0][0])["action"], "scratch_head")
 
 check.section("face id resolution")
+resolve = lambda relaxed_flag: manager._resolve_face_id(None, skip_face_validation=relaxed_flag)
 face_recognition.votes, face_recognition.relaxed = "face_7", None
-check.equal("votes win", manager._resolve_face_id(None, skip_face_validation=False), "face_7")
+check.equal("votes win", resolve(False), ("face_7", True))
 face_recognition.votes, face_recognition.relaxed = None, "face_9"
-check.equal("retries this request's frame",
-            manager._resolve_face_id(None, skip_face_validation=False), "face_9")
+check.equal("request frame is a guess, so unverified", resolve(False), ("face_9", False))
 face_recognition.votes, face_recognition.relaxed = None, None
-check.equal("both empty", manager._resolve_face_id(None, skip_face_validation=False), None)
+check.equal("both empty", resolve(False), (None, False))
 face_recognition.votes, face_recognition.relaxed = "face_7", "face_2"
-check.equal("relaxed skips voting",
-            manager._resolve_face_id(None, skip_face_validation=True), "face_2")
+check.equal("client-requested relaxed skips voting and is trusted",
+            resolve(True), ("face_2", True))
+
+check.section("unconfirmed face is never assumed")
+unconfirmed = manager._reason_about("hello iris", ResolvedFace("face_9", False), None)
+check.equal("routes to face unconfirmed", unconfirmed.get_attribute("state"), "face unconfirmed")
+check.equal("carries no identity", bool(unconfirmed.get_attribute("face_id")), False)
+unconfirmed_chunks = list(api_call["face unconfirmed"](unconfirmed))
+unconfirmed_payload = json.loads(unconfirmed_chunks[0].textchunk)
+check.equal("no body action", unconfirmed_payload["action"], "none")
+check.equal("asks to see the face", "face" in unconfirmed_payload["reply"].lower(), True)
+check.equal("route face unconfirmed",
+            find_best_match("face unconfirmed", api_call.keys()), "face unconfirmed")
+check.equal("route no face still exact",
+            find_best_match("no face", api_call.keys()), "no face")
 
 check.section("transcription")
 check.equal("silence becomes a placeholder",
@@ -296,7 +345,8 @@ check.equal("Pepper auto package is gone",
 for state, api in api_call.items():
     check.equal(f"{state!r} never emits joint angles",
                 type(api).__name__ in {"_Speaking", "_Silent", "_PersonAttribute",
-                                       "_BadInput", "_NoFace", "_UnsupportedAction",
+                                       "_BadInput", "_NoFace", "_FaceUnconfirmed",
+                                       "_UnsupportedAction",
                                        "_SecondaryChannel", "_G1Gesture"}, True)
 
 check.report("PIPELINE OK")
