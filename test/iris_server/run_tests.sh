@@ -11,7 +11,8 @@
 #   test/iris_server/run_tests.sh test_pipeline   # one suite
 #
 # NEO4J_PASSWORD comes from .env at the repo root; utils/__init__.py connects
-# to Neo4j at import time, so the database must be reachable.
+# to Neo4j at import time, so Iris's own database must be up:
+#   docker compose -f docker-compose.iris.yml up -d iris-neo4j
 
 set -euo pipefail
 
@@ -34,6 +35,7 @@ for suite in ${SUITES[*]}; do
     echo "===== $suite"
     docker run --rm --network host --entrypoint python \
         -e NEO4J_PASSWORD="$NEO4J_PASSWORD" \
+        -e NEO4J_URL="${NEO4J_URL:-bolt://localhost:7688}" \
         -e OPENAI_API_KEY="${OPENAI_API_KEY:-unused-in-tests}" \
         -e GROK_API_KEY="${GROK_API_KEY:-unused-in-tests}" \
         -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-unused-in-tests}" \

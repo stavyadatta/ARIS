@@ -216,7 +216,10 @@ check.equal("carries no identity", bool(unconfirmed.get_attribute("face_id")), F
 unconfirmed_chunks = list(api_call["face unconfirmed"](unconfirmed))
 unconfirmed_payload = json.loads(unconfirmed_chunks[0].textchunk)
 check.equal("no body action", unconfirmed_payload["action"], "none")
-check.equal("asks to see the face", "face" in unconfirmed_payload["reply"].lower(), True)
+unconfirmed_replies = sys.modules["apis.face_unconfirmed"].UNCONFIRMED_FACE_REPLIES
+check.equal("speaks one of its replies", unconfirmed_payload["reply"] in unconfirmed_replies, True)
+check.equal("every reply asks the person to lean in",
+            all("lean" in r.lower() or "closer" in r.lower() for r in unconfirmed_replies), True)
 check.equal("route face unconfirmed",
             find_best_match("face unconfirmed", api_call.keys()), "face unconfirmed")
 check.equal("route no face still exact",

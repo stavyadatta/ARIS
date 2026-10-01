@@ -89,3 +89,6 @@ node_modules/
 .claude
 # Per-turn latency measurements written by iris_server/turn_timing.py
 *.jsonl
+
+# Iris's own enrolled faces: biometric data, never committed.
+database_iris/

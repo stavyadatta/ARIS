@@ -40,6 +40,7 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}
+      - NEO4J_URL=bolt://localhost:7688
       - GROK_API_KEY=${GROK_API_KEY:-}
       - API_KEY=${API_KEY:-}
       - PYTHONUNBUFFERED=1
@@ -50,7 +51,7 @@ services:
       # Persist models so they aren't re-baked into every image.
       - ./iris_server/models:/workspace/iris_server/models
       # Face/voice DB and recordings — runtime state, too large to bake in.
-      - ./database:/workspace/database
+      - ./database_iris:/workspace/database
       # Frames the pipeline is currently looking at, written by
       # media_manager/grpc_handle.py and served by image_viewer on :8003.
       - ./display_imgs:/workspace/display_imgs
@@ -85,11 +86,40 @@ services:
         max-file: "5"
 
     restart: unless-stopped
+    depends_on:
+      iris-neo4j:
+        condition: service_healthy
+
+  # Iris's own people and conversation history. The shared Neo4j at
+  # 172.27.72.27:7687 belongs to Pepper (ginny_server); Iris once read and wrote
+  # it, so robots inherited each other's names and histories. Bolt is on 7688
+  # and the browser on 7475 so neither collides with the shared instance.
+  # Reuses NEO4J_PASSWORD from .env: a separate server, not a shared secret.
+  iris-neo4j:
+    image: neo4j:5.26-community
+    container_name: iris-neo4j
+    network_mode: host
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}
+      - NEO4J_server_bolt_listen__address=127.0.0.1:7688
+      - NEO4J_server_http_listen__address=127.0.0.1:7475
+      - NEO4J_server_https_enabled=false
+      - IRIS_DB_PASSWORD=${NEO4J_PASSWORD}
+    volumes:
+      - iris-neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -a bolt://localhost:7688 -u neo4j -p \"$$IRIS_DB_PASSWORD\" 'RETURN 1' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
 
 # Docker-managed volumes for the model caches above. Inspect with
 # `docker volume ls`; reclaim the space with
-# `docker compose -f docker-compose.iris.yml down -v`.
+# `docker volume rm` on a cache volume. Do NOT use `down -v`: it also deletes
+# iris-neo4j-data, which holds every person Iris has met.
 volumes:
+  iris-neo4j-data:
   whisper-cache:
   insightface-cache:
   torch-cache:

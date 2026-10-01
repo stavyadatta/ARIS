@@ -8,15 +8,35 @@ from neo4j import GraphDatabase
 from utils import PersonDetails
 from turn_timing import span
 
+# Iris's own Neo4j (docker-compose.iris.yml, service iris-neo4j). It must never
+# default to the instance Pepper shares: that is how Iris inherited Pepper's
+# people, names and histories.
+IRIS_NEO4J_URL = "bolt://localhost:7688"
+MESSAGE_EMBEDDING_DIMENSIONS = 1536
+
+
 class _Neo4j:
-    def __init__(self, neo4j_url="bolt://172.27.72.27:7687"):
+    def __init__(self, neo4j_url=None):
+        neo4j_url = neo4j_url or os.environ.get("NEO4J_URL", IRIS_NEO4J_URL)
         neo4j_passwd = os.environ["NEO4J_PASSWORD"]
         neo4j_user = "neo4j"
         self.driver = GraphDatabase.driver(neo4j_url, auth=(neo4j_user, neo4j_passwd))
         print("Connected to the database")
 
         self.relationship_queue = Queue()
+        self._ensure_message_index()
         self.update_db_name_list()
+
+    def _ensure_message_index(self):
+        """A fresh database has no vector index, and recall queries need one."""
+        self.write_query(f"""
+            CREATE VECTOR INDEX message_embeddings IF NOT EXISTS
+            FOR (m:Message) ON (m.embedding)
+            OPTIONS {{ indexConfig: {{
+                `vector.dimensions`: {MESSAGE_EMBEDDING_DIMENSIONS},
+                `vector.similarity_function`: 'cosine'
+            }}}}
+        """)
 
     def close(self):
         self.driver.close()
