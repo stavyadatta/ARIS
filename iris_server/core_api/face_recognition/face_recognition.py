@@ -71,7 +71,7 @@ class _FaceRecognition:
         self.model_points = self._get_3d_model_points()
         self.dist_coeffs = np.zeros((4, 1), dtype=np.float32)
 
-        self.min_area = 4500  # default; updated at runtime via gRPC
+        self.min_area = 2000  # default; updated at runtime via gRPC
 
         self.face_img_queue = Queue(maxsize=15)
         self.face_id_queue = deque(maxlen=15)
