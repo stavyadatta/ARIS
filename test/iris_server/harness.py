@@ -22,6 +22,18 @@ _MODEL_SINGLETONS = (
 )
 
 
+class FakeKokoroTts:
+    """Stands in for the GPU voice: returns a fixed string, or None when told to fail."""
+
+    def __init__(self, speech="U1BFRUNI"):
+        self.speech = speech
+        self.spoken = []
+
+    def speech_base64(self, text, voice=None):
+        self.spoken.append(text)
+        return self.speech if text and text.strip() else None
+
+
 class _InertModel:
     """Absorbs any call an API makes on a model these tests do not exercise.
 
@@ -39,7 +51,7 @@ def add_iris_server_to_path():
         sys.path.insert(0, IRIS_SERVER_PATH)
 
 
-def stub_core_api_models(face_recognition=None, transcribe=None):
+def stub_core_api_models(face_recognition=None, transcribe=None, kokoro_tts=None):
     """Replace core_api wholesale with stand-ins for the model singletons.
 
     Use for tests of the pipeline, which cares what the models return rather
@@ -50,6 +62,7 @@ def stub_core_api_models(face_recognition=None, transcribe=None):
         setattr(core_api, name, _InertModel())
     core_api.FaceRecognition = face_recognition
     core_api.WhisperSpeech2Text = transcribe
+    core_api.KokoroTts = kokoro_tts or FakeKokoroTts()
     sys.modules["core_api"] = core_api
     return core_api
 

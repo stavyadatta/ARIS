@@ -1,5 +1,6 @@
 from .face_recognition import _FaceRecognition
 from .whisper2text import _WhisperSpeech2Text
+from .kokoro_tts import _KokoroTts
 from .llama import _Llama
 from .claude import _ClaudeImageProcessor
 from .yolo import _PersonDetectorCropper, _YOLODetector
@@ -12,6 +13,7 @@ from .trackers import OCSort
 
 FaceRecognition = _FaceRecognition()
 WhisperSpeech2Text = _WhisperSpeech2Text()
+KokoroTts = _KokoroTts()
 Llama = _Llama()
 PersonDetectionCropper = _PersonDetectorCropper()
 YOLODetector = _YOLODetector()
@@ -24,6 +26,7 @@ ClipClassification = _ClipClassification()
 
 __all__ = ["FaceRecognition", 
            "WhisperSpeech2Text", 
+           "KokoroTts", 
            "Llama", 
            "PersonDetectionCropper", 
            "YOLODetector", 

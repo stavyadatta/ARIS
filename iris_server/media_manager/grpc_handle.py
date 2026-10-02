@@ -1,3 +1,4 @@
+import json
 import os
 import random
 from typing import NamedTuple, Optional
@@ -9,7 +10,7 @@ import traceback
 import numpy as np
 from google.protobuf.empty_pb2 import Empty
 
-from core_api import FaceRecognition, WhisperSpeech2Text, ClipClassification
+from core_api import FaceRecognition, KokoroTts, WhisperSpeech2Text, ClipClassification
 from executor import Executor
 from reasoner import Reasoner
 from utils import (
@@ -279,6 +280,28 @@ class MediaManager(MediaServiceServicer):
             traceback.print_exc()
             yield self._apology_chunk()
 
+    def _with_voice(self, payload):
+        """Attach Iris's synthesised voice to a g1_action payload that has words.
+
+        This is the one place speech is generated, so every reply -- spoken,
+        gesture, fallback or apology -- gets a voice without each API knowing
+        about it. An unreadable payload or a failed synthesis leaves the
+        payload as it was, and the client falls back to its own voice.
+        """
+        try:
+            fields = json.loads(payload)
+        except ValueError:
+            return payload
+        with span("kokoro_tts"):
+            speech = KokoroTts.speech_base64(fields.get("reply", ""))
+        return g1_action_payload(fields.get("reply", ""), fields.get("action", ACTION_NONE),
+                                 speech=speech)
+
+    def _text_chunk(self, text, mode):
+        if mode == G1_ACTION_MODE:
+            text = self._with_voice(text)
+        return TextChunk(text=text, is_final=False, mode=mode)
+
     def _save_request_audio(self, request):
         self.save_audio_to_file(
             audio_data=request.audio_data,
@@ -315,8 +338,7 @@ class MediaManager(MediaServiceServicer):
                 print("Is the image coming as None")
                 mark("outcome", "no_image")
                 print("[g1_action] image decode failed; apologising aloud")
-                payload, mode = self._apology_chunk()
-                yield TextChunk(mode=mode, text=payload)
+                yield self._text_chunk(*self._apology_chunk())
                 return
 
             pipeline_response = self._getting_response(
@@ -326,7 +348,7 @@ class MediaManager(MediaServiceServicer):
             for response_text, mode in pipeline_response:
                 record_first_moment("first_chunk_at_ms")
                 chunks_out += 1
-                yield TextChunk(text=response_text, is_final=False, mode=mode)
+                yield self._text_chunk(response_text, mode)
             mark("chunks_out", chunks_out)
 
         except Exception as e:
@@ -335,8 +357,7 @@ class MediaManager(MediaServiceServicer):
             mark("outcome", "error")
             # This is a generator: a returned value is discarded, so the
             # client would be handed a silent stream instead of the error.
-            payload, mode = self._apology_chunk()
-            yield TextChunk(mode=mode, text=payload)
+            yield self._text_chunk(*self._apology_chunk())
 
     def StreamImages(self, request_iterator, context):
         """

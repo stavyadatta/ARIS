@@ -225,6 +225,33 @@ check.equal("route face unconfirmed",
 check.equal("route no face still exact",
             find_best_match("no face", api_call.keys()), "no face")
 
+check.section("server speaks: voice attached to g1_action chunks")
+voice = sys.modules["core_api"].KokoroTts
+spoken = json.loads(manager._text_chunk(g1_action_payload("Hello there.", "wave"), "g1_action").text)
+check.equal("reply kept", spoken["reply"], "Hello there.")
+check.equal("action kept", spoken["action"], "wave")
+check.equal("speech attached", spoken.get("speech"), voice.speech)
+check.equal("synthesised the reply text", voice.spoken[-1], "Hello there.")
+
+apology = json.loads(manager._text_chunk(*manager._apology_chunk()).text)
+check.equal("apology is voiced too", "speech" in apology, True)
+
+voice.spoken.clear()
+silent = json.loads(manager._text_chunk(g1_action_payload("", "none"), "g1_action").text)
+check.equal("empty reply carries no speech", "speech" in silent, False)
+
+voice.speech = None
+unvoiced = json.loads(manager._text_chunk(g1_action_payload("Hello there.", "wave"), "g1_action").text)
+check.equal("failed synthesis drops speech, keeps the turn",
+            (unvoiced["reply"], unvoiced["action"], "speech" in unvoiced),
+            ("Hello there.", "wave", False))
+voice.speech = "U1BFRUNI"
+
+check.equal("non-g1 modes pass through untouched",
+            manager._text_chunk("raw streamed words", "default").text, "raw streamed words")
+check.equal("unreadable g1 payload passes through",
+            manager._text_chunk("not json", "g1_action").text, "not json")
+
 check.section("transcription")
 check.equal("silence becomes a placeholder",
             manager._transcribe({"fake_transcription": "."}), "You")

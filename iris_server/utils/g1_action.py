@@ -16,13 +16,15 @@ ACTION_NONE = "none"
 ACTION_SCRATCH_HEAD = "scratch_head"
 
 
-def g1_action_payload(reply: str, action: str) -> str:
+def g1_action_payload(reply: str, action: str, speech: str = None) -> str:
     """Serialise one reply/action pair for the G1 client.
 
-    Speech is deliberately not carried here. Iris's voice is synthesised by the
-    Kokoro sidecar the client talks to directly (g1_client_cpp/robot/
-    kokoro_client), which keeps the audio off this wire and lets the sidecar run
-    the Python 3.10 that kokoro-onnx needs -- the robot's system Python is 3.8.
+    `speech` is base64 16 kHz mono 16-bit PCM of `reply`, generated on the
+    server so the robot's Jetson does not have to synthesise it. It is omitted
+    when generation is unavailable, and the client then falls back to its own
+    voice -- so a failure here costs speed, never the turn.
     """
-    return json.dumps({"reply": reply, "action": action}, ensure_ascii=False)
-
+    payload = {"reply": reply, "action": action}
+    if speech:
+        payload["speech"] = speech
+    return json.dumps(payload, ensure_ascii=False)

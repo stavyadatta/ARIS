@@ -26,6 +26,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # libgomp1: numba / sklearn
 # libsox-dev/libsoxr0: torchaudio sox backend
 # libusb/libasound/libpulse: PyAudio + sounddevice runtime
+# espeak-ng: Kokoro's fallback pronunciation for words its dictionary lacks
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.10 \
         python3.10-dev \
@@ -55,6 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxkbcommon0 \
         libegl1 \
         libusb-1.0-0 \
+        espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 RUN ln -sf /usr/bin/python3.10 /usr/local/bin/python \
@@ -74,6 +76,10 @@ RUN pip install --extra-index-url https://download.pytorch.org/whl/cu118 \
 WORKDIR /workspace
 COPY requirements_server.txt /workspace/requirements_server.txt
 RUN pip install -r /workspace/requirements_server.txt
+
+# Kokoro's text front end (misaki) otherwise downloads this spaCy model with
+# pip on first use, so every fresh container needs the internet to speak.
+RUN python -m spacy download en_core_web_sm
 
 # ---------- yolox (must come after torch) ----------
 RUN pip install --no-build-isolation git+https://github.com/Megvii-BaseDetection/YOLOX.git
