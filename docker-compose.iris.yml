@@ -14,6 +14,7 @@
 #       ANTHROPIC_API_KEY=sk-ant-...
 #       NEO4J_PASSWORD=...
 #       GROK_API_KEY=...
+#       OPENAI_MODEL=gpt-4o-mini   (chat model; smaller = faster)
 #       API_KEY=...
 #   The ${VAR:-} syntax below reads from that .env (or the shell env) and
 #   defaults to empty if missing, so the container always starts.
@@ -39,6 +40,7 @@ services:
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}
       - NEO4J_URL=bolt://localhost:7688
       - GROK_API_KEY=${GROK_API_KEY:-}

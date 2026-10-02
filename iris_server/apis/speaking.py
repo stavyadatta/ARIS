@@ -149,7 +149,7 @@ class _Speaking(ApiBase):
         # response = Llama.send_to_model(total_prompt, stream=True)
         # response = Claude.process_text(messages, system_dict, stream=True)
         try:
-            return ChatGPT.send_text(total_prompt, stream=True, model='gpt-4-turbo',
+            return ChatGPT.send_text(total_prompt, stream=True,
                                      max_tokens=SPOKEN_REPLY_MAX_TOKENS)
         except Exception as e:
             print("chatgpt failed ", e)

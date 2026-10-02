@@ -1,3 +1,5 @@
+import os
+
 import openai
 
 from ..vision_request import _VisionRequestMixin
@@ -9,6 +11,11 @@ from ..vision_request import _VisionRequestMixin
 # for ten minutes.
 REQUEST_TIMEOUT_SECONDS = 20
 MAX_RETRIES = 1
+
+# The model behind every chat reply and classification. Set OPENAI_MODEL in
+# .env to change it without touching code; a smaller model answers faster.
+# Vision and o1 requests keep their own models.
+DEFAULT_CHAT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
 
 class _OpenAIHandler(_VisionRequestMixin):
@@ -52,7 +59,7 @@ class _OpenAIHandler(_VisionRequestMixin):
         )
 
 
-    def send_text(self, messages: list[dict], stream: bool, img=None, model="gpt-4o", max_tokens=500):
+    def send_text(self, messages: list[dict], stream: bool, img=None, model=DEFAULT_CHAT_MODEL, max_tokens=500):
         """
             :param messages: A dictionary of messages for additional context to be 
              provided to the model for benefit
@@ -101,7 +108,7 @@ class _OpenAIHandler(_VisionRequestMixin):
             return f"Unexpected Error: {str(e)}"
 
 
-    def send_text_get_json(self, messages: list[dict], stream: bool, img=None, max_tokens=500, model="gpt-4o"):
+    def send_text_get_json(self, messages: list[dict], stream: bool, img=None, max_tokens=500, model=DEFAULT_CHAT_MODEL):
         """
             :param messages: A dictionary of messages for additional context to be 
              provided to the model for benefit
