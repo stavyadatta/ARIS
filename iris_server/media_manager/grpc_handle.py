@@ -81,6 +81,11 @@ SAMPLE_WIDTHS_BY_ENCODING = {
 
 EMPTY_FACE_BBOX = FaceBoundingBox(x1=0, y1=0, x2=0, y2=0)
 
+# What the robot's audio service plays: 16 kHz, mono, 16-bit.
+SPEECH_BYTES_PER_SECOND = 16000 * 2
+BASE64_BYTES_PER_RAW_BYTE = 4 / 3
+BYTES_PER_KILOBYTE = 1024
+
 
 class ResolvedFace(NamedTuple):
     """Who the camera thinks is there, and whether that deserves trust."""
@@ -292,10 +297,41 @@ class MediaManager(MediaServiceServicer):
             fields = json.loads(payload)
         except ValueError:
             return payload
+        reply = fields.get("reply", "")
+        started_at = time.perf_counter()
         with span("kokoro_tts"):
-            speech = KokoroTts.speech_base64(fields.get("reply", ""))
-        return g1_action_payload(fields.get("reply", ""), fields.get("action", ACTION_NONE),
-                                 speech=speech)
+            speech = KokoroTts.speech_base64(reply)
+        self._report_voice(reply, speech, time.perf_counter() - started_at)
+        return g1_action_payload(reply, fields.get("action", ACTION_NONE), speech=speech)
+
+    def _report_voice(self, reply, speech, seconds_taken):
+        """Say whether the robot got a voice, and what it cost to make.
+
+        A turn whose audio went missing otherwise looks identical in the log to
+        one that was never meant to speak: the client just falls back quietly.
+        The same facts land in turn_timing.jsonl, one set per turn (the last
+        voiced chunk wins; ordinary turns have exactly one).
+        """
+        outcome = self._voice_outcome(reply, speech)
+        facts = {"voice": outcome, "voice_ms": round(seconds_taken * 1000, 1)}
+        if speech:
+            facts["voice_audio_s"] = round(self._speech_seconds(speech), 2)
+            facts["voice_wire_kb"] = round(len(speech) / BYTES_PER_KILOBYTE, 1)
+        for name, value in facts.items():
+            mark(name, value)
+        print(f"[voice] {outcome} {' '.join(f'{k}={v}' for k, v in facts.items() if k != 'voice')}"
+              f" reply_chars={len(reply)}")
+
+    @staticmethod
+    def _voice_outcome(reply, speech):
+        if speech:
+            return "attached"
+        return "skipped_empty_reply" if not reply.strip() else "synthesis_failed"
+
+    @staticmethod
+    def _speech_seconds(speech):
+        raw_bytes = len(speech) / BASE64_BYTES_PER_RAW_BYTE
+        return raw_bytes / SPEECH_BYTES_PER_SECOND
 
     def _text_chunk(self, text, mode):
         if mode == G1_ACTION_MODE:

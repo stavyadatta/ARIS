@@ -5,6 +5,7 @@ reason, then fold the executor's output into the G1 reply/action contract —
 plus the gRPC endpoints that feed it.
 """
 
+import base64
 import importlib.util
 import json
 import queue
@@ -251,6 +252,29 @@ check.equal("non-g1 modes pass through untouched",
             manager._text_chunk("raw streamed words", "default").text, "raw streamed words")
 check.equal("unreadable g1 payload passes through",
             manager._text_chunk("not json", "g1_action").text, "not json")
+
+check.section("voice report")
+import io, contextlib
+voice.speech = base64.b64encode(b"\x00\x01" * 16000).decode()   # 1.0 s of samples
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    manager._text_chunk(g1_action_payload("Hello there.", "wave"), "g1_action")
+line = captured.getvalue()
+check.equal("logs an attached voice", "[voice] attached" in line, True)
+check.equal("reports audio seconds", "voice_audio_s=1.0" in line, True)
+check.equal("reports wire size and reply length",
+            "voice_wire_kb=" in line and "reply_chars=12" in line, True)
+
+voice.speech = None
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    manager._text_chunk(g1_action_payload("Hello there.", "wave"), "g1_action")
+check.equal("names a failed synthesis", "[voice] synthesis_failed" in captured.getvalue(), True)
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    manager._text_chunk(g1_action_payload("", "none"), "g1_action")
+check.equal("names an empty reply", "[voice] skipped_empty_reply" in captured.getvalue(), True)
+voice.speech = "U1BFRUNI"
 
 check.section("transcription")
 check.equal("silence becomes a placeholder",
