@@ -8,6 +8,7 @@ were the problem.  This API keeps the two failures distinct.
 
 import random
 
+import turn_log
 from core_api import PersonDetectionCropper
 from utils import (
     ACTION_NONE,
@@ -53,7 +54,7 @@ class _NoFace(ApiBase):
     def __call__(self, person_details: PersonDetails):
         replies = BODY_ONLY_REPLIES if self._body_in_view(person_details.image) else NO_FACE_REPLIES
         reply = random.choice(replies)
-        print(f"[iris_action] state=no face action={ACTION_NONE} reply={reply!r}")
+        turn_log.step("no face", "asking the person to be seen")
         yield ApiObject(g1_action_payload(reply, ACTION_NONE), mode=G1_ACTION_MODE)
 
     @staticmethod

@@ -23,6 +23,7 @@ from utils import (
 )
 from grpc_pb2 import TextChunk, FaceBoundingBox, QueueRemoval
 from grpc_pb2_grpc import MediaServiceServicer
+import turn_log
 from turn_timing import mark, record_first_moment, span, turn
 
 # These are deliberately longer than a one-line error. They give G1's
@@ -150,7 +151,7 @@ class MediaManager(MediaServiceServicer):
         transcription = WhisperSpeech2Text(audio_img_item)
         if len(transcription) < MIN_USABLE_TRANSCRIPTION_LEN:
             transcription = SILENCE_PLACEHOLDER
-        print(f"Transcription: {transcription}")
+        turn_log.heard(transcription)
         return transcription
 
     @staticmethod
@@ -162,7 +163,7 @@ class MediaManager(MediaServiceServicer):
     def _quiet_chunk(self):
         """An explicit silence: an empty reply turns into "could you repeat
         that?" with a head scratch unless the contract says nothing on purpose."""
-        print(f"\n[g1_action] filler-only turn; staying quiet, action={ACTION_NONE}")
+        turn_log.step("quiet", "filler-only turn, nothing to answer")
         return (g1_action_payload("", ACTION_NONE), G1_ACTION_MODE)
 
     def _face_id_from_stream_votes(self, image):
@@ -215,11 +216,10 @@ class MediaManager(MediaServiceServicer):
         if person_details.get_attribute("state") in (
                 VISION_STATE, NO_FACE_STATE):
             person_details.set_image(image)
-        print(f"Resolved person state: {person_details.get_attribute('state')}")
+        turn_log.step("route", str(person_details.get_attribute("state")))
         return person_details
 
     def _speech_chunk(self, reply):
-        print(f"\n[g1_action] action={ACTION_NONE}")
         return (g1_action_payload(reply, ACTION_NONE), G1_ACTION_MODE)
 
     def _apology_chunk(self):
@@ -232,14 +232,13 @@ class MediaManager(MediaServiceServicer):
         the log.
         """
         reply = random.choice(G1_ERROR_REPLIES)
-        print(f"[g1_action] apologising; action={ACTION_NONE}")
+        turn_log.step("apology", "something failed; telling the person to ask a human")
         return (g1_action_payload(reply, ACTION_NONE), G1_ACTION_MODE)
 
     def _listening_fallback_chunk(self, log_reason):
         """Ask for a repeat without inventing a physical action."""
         reply = random.choice(G1_LISTENING_FALLBACKS)
-        print(f"\n[g1_action] {log_reason}; using fallback")
-        print(f"[g1_action] action={ACTION_SCRATCH_HEAD}")
+        turn_log.step("fallback", f"{log_reason}; asking the person to repeat")
         return (g1_action_payload(reply, ACTION_SCRATCH_HEAD), G1_ACTION_MODE)
 
     def _spoken_reply_chunk(self, reply):
@@ -260,7 +259,7 @@ class MediaManager(MediaServiceServicer):
         emitted_structured_chunk = False
 
         for response_chunk in api_response:
-            print(response_chunk.textchunk, end='', flush=True)
+            turn_log.debug(f"chunk mode={response_chunk.mode} text={response_chunk.textchunk!r}")
             if response_chunk.mode == SPEECH_CHUNK_MODE:
                 speech_parts.append(response_chunk.textchunk)
                 continue
@@ -297,7 +296,6 @@ class MediaManager(MediaServiceServicer):
                 person_details = self._reason_about(transcription, face, image)
             mark("route", person_details.get_attribute("state"))
 
-            print("Executor response:")
             # Executor returns an unstarted generator, so this span is dispatch
             # only; the API's own work lands inside api_response below.
             with span("executor_dispatch"):
@@ -323,6 +321,7 @@ class MediaManager(MediaServiceServicer):
         except ValueError:
             return payload
         reply = fields.get("reply", "")
+        turn_log.said(reply, fields.get("action", ACTION_NONE))
         started_at = time.perf_counter()
         with span("kokoro_tts"):
             speech = KokoroTts.speech_base64(reply)
@@ -394,7 +393,6 @@ class MediaManager(MediaServiceServicer):
 
             with span("decode_image"):
                 image = self._decode_image_from_bytes(request.image_data)
-            print("Image has been decoded I think")
             if image is None:
                 print("Is the image coming as None")
                 mark("outcome", "no_image")

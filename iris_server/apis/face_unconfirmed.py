@@ -10,6 +10,7 @@ really is, and we do not yet know.
 
 import random
 
+import turn_log
 from utils import (
     ACTION_NONE,
     ApiObject,
@@ -33,5 +34,5 @@ class _FaceUnconfirmed(ApiBase):
 
     def __call__(self, person_details: PersonDetails):
         reply = random.choice(UNCONFIRMED_FACE_REPLIES)
-        print(f"[iris_action] state=face unconfirmed action={ACTION_NONE} reply={reply!r}")
+        turn_log.step("unconfirmed", "face match is a guess; asking before assuming who")
         yield ApiObject(g1_action_payload(reply, ACTION_NONE), mode=G1_ACTION_MODE)

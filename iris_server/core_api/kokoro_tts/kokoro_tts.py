@@ -29,6 +29,7 @@ KOKORO_SAMPLE_RATE = 24000
 # server's audio is missing and the client falls back.
 DEFAULT_VOICE = "af_sarah"
 LANGUAGE_CODE = "a"   # American English
+KOKORO_REPO_ID = "hexgrad/Kokoro-82M"
 
 
 class _KokoroTts:
@@ -51,7 +52,7 @@ class _KokoroTts:
             if device == "cpu":
                 print("[kokoro] no CUDA device; speech will be ~100x slower "
                       "and will show up in turn latency")
-            self._pipeline = KPipeline(lang_code=LANGUAGE_CODE, device=device)
+            self._pipeline = KPipeline(lang_code=LANGUAGE_CODE, repo_id=KOKORO_REPO_ID, device=device)
         return self._pipeline
 
     def warm_up(self) -> None:

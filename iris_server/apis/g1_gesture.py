@@ -17,6 +17,7 @@ from utils import (
     message_format,
 )
 from turn_timing import span
+import turn_log
 from .api_base import ApiBase
 
 # One short spoken line. The reply travels as a single g1_action JSON object,
@@ -131,8 +132,7 @@ class _G1Gesture(ApiBase):
             """,
         )
         self._remember_reply(person_details, question)
-        print(f"[g1_action] state={state} action={ACTION_NONE} "
-              f"(awaiting confirmation) question={question!r}")
+        turn_log.step("confirm", f"{state}: asking before acting")
         return ApiObject(
             g1_action_payload(question, ACTION_NONE), mode=G1_ACTION_MODE
         )
@@ -143,7 +143,7 @@ class _G1Gesture(ApiBase):
         reply = self._spoken_reply_for(person_details, gesture)
         self._remember_reply(person_details, reply)
         person_details.set_attribute("state", STATE_SPEAK)
-        print(f"[g1_action] state={state} action={gesture['action']} reply={reply!r}")
+        turn_log.debug(f"gesture state={state} action={gesture['action']}")
         return ApiObject(
             g1_action_payload(reply, gesture["action"]),
             mode=G1_ACTION_MODE,

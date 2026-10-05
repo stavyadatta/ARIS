@@ -7,6 +7,9 @@ plus the gRPC endpoints that feed it.
 
 import base64
 import importlib.util
+import io
+import contextlib
+import os
 import json
 import queue
 import sys
@@ -297,6 +300,54 @@ check.equal("it is silent, not the listening fallback",
 relaxed_calls_before = face_recognition.relaxed_calls
 list(manager._getting_response({"fake_transcription": "Um...", "image_data": np.zeros((4, 4, 3), dtype=np.uint8)}))
 check.equal("it never reached the face stage", face_recognition.relaxed_calls, relaxed_calls_before)
+
+check.section("turn log: heard and said stand out, the rest stays quiet")
+import turn_log
+import turn_timing
+
+def printed(call, *args, **env):
+    old = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    buffer = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buffer):
+            call(*args)
+    finally:
+        for key, value in old.items():
+            os.environ.pop(key, None) if value is None else os.environ.__setitem__(key, value)
+    return buffer.getvalue()
+
+heard_line = printed(turn_log.heard, "Hello Iris", IRIS_LOG_COLOR="0")
+check.equal("heard names the words", "HEARD" in heard_line and "'Hello Iris'" in heard_line, True)
+check.equal("no colour codes when colour is off", "\033[" in heard_line, False)
+check.equal("colour on by default", "\033[" in printed(turn_log.heard, "Hello Iris"), True)
+
+said_line = printed(turn_log.said, "Hi there!", "wave", IRIS_LOG_COLOR="0")
+check.equal("said shows reply and gesture", "'Hi there!'" in said_line and "[wave]" in said_line, True)
+check.equal("no gesture tag for none", "[" in printed(turn_log.said, "Hi", "none", IRIS_LOG_COLOR="0"), False)
+check.equal("silence is spelled out", "(silence)" in printed(turn_log.said, "", "none", IRIS_LOG_COLOR="0"), True)
+
+check.equal("debug hidden by default", printed(turn_log.debug, "x"), "")
+check.equal("debug shown when verbose", "x" in printed(turn_log.debug, "x", IRIS_LOG_VERBOSE="1"), True)
+
+record = turn_timing._Turn("process_audio_img")
+record.total_ms = 4019.2
+record.spans = [
+    {"name": "transcribe", "depth": 0, "ms": 185.5},
+    {"name": "whisper.transcribe", "depth": 1, "ms": 145.9},
+    {"name": "resolve_face_id", "depth": 0, "ms": 0.0},
+    {"name": "reason", "depth": 0, "ms": 748.6},
+    {"name": "api_response", "depth": 0, "ms": 3080.2},
+]
+record.facts = {"route": "g1 handshake", "first_chunk_at_ms": 1938.1}
+summary = printed(turn_timing._print_breakdown, record, IRIS_LOG_COLOR="0")
+check.equal("one line per turn", len(summary.strip().splitlines()), 1)
+check.equal("names the stages in plain words",
+            all(word in summary for word in ("heard 0.19s", "classify 0.75s", "reply 3.08s")), True)
+check.equal("shows total and first reply", "4.02s total" in summary and "first reply at 1.94s" in summary, True)
+check.equal("drops sub-spans and zero-cost stages", "whisper" not in summary and "face" not in summary, True)
+verbose = printed(turn_timing._print_breakdown, record, IRIS_LOG_VERBOSE="1")
+check.equal("verbose keeps the full table", "whisper.transcribe" in verbose and "facts route=" in verbose, True)
 
 check.section("transcription")
 check.equal("silence becomes a placeholder",

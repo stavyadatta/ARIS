@@ -1,4 +1,5 @@
 import cv2
+import turn_log
 import glob
 import math
 import torch
@@ -351,7 +352,7 @@ class _FaceRecognition:
         """Report a streamed frame being unusable, but only on a change."""
         if reason == self._last_rejection_reason:
             return
-        print("Streamed frames unusable: {}".format(reason))
+        turn_log.debug("streamed frames unusable: {}".format(reason))
         self._last_rejection_reason = reason
 
     def _face_recognition_on_queue(self):
@@ -368,7 +369,7 @@ class _FaceRecognition:
                 continue
 
             if self._last_rejection_reason is not None:
-                print("Streamed frames usable again")
+                turn_log.debug("streamed frames usable again")
                 self._last_rejection_reason = None
 
             self.face_id_queue.append(recognized_id)

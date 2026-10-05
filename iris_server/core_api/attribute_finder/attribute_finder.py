@@ -1,4 +1,5 @@
 import json
+import turn_log
 from logging import exception
 from threading import Thread
 from queue import Queue
@@ -230,7 +231,7 @@ class _AttributeFinder():
         # Adding the attribute to the existing attributes list
         person_attributes.append(output_attribute)
 
-        print("These are the attributes going in ", person_attributes, attribute_bool, name_bool)
+        turn_log.debug(f"attributes going in: {person_attributes} {attribute_bool} {name_bool}")
 
         # For checking if the attributes are being described for a third person 
         # who is friend, th expectation is of using pronounds like She or He

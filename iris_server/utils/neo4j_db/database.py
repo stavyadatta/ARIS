@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import traceback
+import turn_log
 from queue import Queue
 from neo4j import GraphDatabase
 
@@ -389,7 +390,7 @@ class _Neo4j:
 
         face_id = person_details.get_attribute("face_id")
         state = person_details.get_attribute("state")
-        print("The State inside Neo4j Add message function is ", state)
+        turn_log.debug(f"neo4j add_message state={state}")
 
         usr_dict = person_details.get_latest_user_message()
         usr_txt = usr_dict["content"]

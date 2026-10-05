@@ -41,6 +41,8 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - IRIS_LOG_VERBOSE=${IRIS_LOG_VERBOSE:-0}
+      - IRIS_LOG_COLOR=${IRIS_LOG_COLOR:-1}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}
       - NEO4J_URL=bolt://localhost:7688
       - GROK_API_KEY=${GROK_API_KEY:-}

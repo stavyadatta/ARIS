@@ -1,4 +1,5 @@
 import json
+import turn_log
 from queue import Queue
 from threading import Thread
 
@@ -33,7 +34,7 @@ class _RelationshipChecker:
             print("The clostest name is ", closest_name)
             return closest_name
         else:
-            print("No name is found, returning name is ", name)
+            turn_log.debug(f"no name found, returning {name!r}")
             return name
 
     def find_similar_name(self, name_list):

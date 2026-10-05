@@ -20,12 +20,22 @@ import threading
 from contextlib import contextmanager
 from time import perf_counter
 
+import turn_log
+
 DEFAULT_LOG_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "logs", "turn_timing.jsonl"
 )
 TIMING_LOG_PATH = os.environ.get("IRIS_TIMING_LOG", DEFAULT_LOG_PATH)
 
 MS_PER_SECOND = 1000
+# A stage under this is noise in a one-line summary; the jsonl still has it.
+MIN_SUMMARY_STAGE_MS = 20
+SUMMARY_STAGE_NAMES = {
+    "transcribe": "heard",
+    "resolve_face_id": "face",
+    "reason": "classify",
+    "api_response": "reply",
+}
 NAME_COLUMN_WIDTH = 38
 
 # gRPC serves each RPC on its own worker thread and drives that request's
@@ -141,11 +151,37 @@ def _emit(record):
 
 
 def _print_breakdown(record):
-    print(f"[timing] {record.label} total={record.total_ms}ms")
-    for entry in record.spans:
-        print(_span_line(entry, record.total_ms))
-    if record.facts:
-        print(f"[timing] facts {_format_facts(record.facts)}")
+    """One summary line per turn; the full span table only when verbose.
+
+    turn_timing.jsonl always keeps every span, so the table is for reading the
+    log live, not for analysis.
+    """
+    if turn_log.is_verbose():
+        print(f"[timing] {record.label} total={record.total_ms}ms")
+        for entry in record.spans:
+            print(_span_line(entry, record.total_ms))
+        if record.facts:
+            print(f"[timing] facts {_format_facts(record.facts)}")
+        return
+    print(_summary_line(record))
+
+
+def _summary_line(record):
+    stages = " ".join(
+        f"{_short_name(entry['name'])} {entry['ms'] / MS_PER_SECOND:.2f}s"
+        for entry in record.spans
+        if entry["depth"] == 0 and entry["ms"] >= MIN_SUMMARY_STAGE_MS
+    )
+    first_audio = record.facts.get("first_chunk_at_ms")
+    first_audio_text = f" | first reply at {first_audio / MS_PER_SECOND:.2f}s" if first_audio else ""
+    return turn_log._paint(
+        turn_log.DIM,
+        f"  [timing] {record.total_ms / MS_PER_SECOND:.2f}s total | {stages}{first_audio_text}",
+    )
+
+
+def _short_name(span_name):
+    return SUMMARY_STAGE_NAMES.get(span_name, span_name)
 
 
 def _span_line(entry, total_ms):

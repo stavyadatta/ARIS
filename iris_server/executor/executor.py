@@ -1,4 +1,5 @@
 from typing import Iterator
+import turn_log
 
 from apis import api_call 
 from utils import PersonDetails, ApiObject
@@ -38,7 +39,7 @@ class _Executor():
 
         best_key = find_best_match(state, api_call.keys())
 
-        print(f"[executor] state={state!r} selected_api={best_key!r}")
+        turn_log.debug(f"executor state={state!r} api={best_key!r}")
 
         response = api_call[best_key](person_details)
         return response

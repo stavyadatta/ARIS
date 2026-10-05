@@ -1,3 +1,13 @@
+import logging
+import warnings
+
+# Third-party noise that buries the turn log. numpy and torch announce future
+# API changes on every call, and Neo4j warns that a property does not exist yet
+# whenever a person has no name -- all expected here.
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module=r"torch\..*")
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
+
 import grpc
 from collections import deque
 from concurrent import futures

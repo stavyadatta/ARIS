@@ -5,12 +5,13 @@ from typing import Optional
 
 from utils import Neo4j, PersonDetails, message_format
 from core_api import Llama, ChatGPT, Grok
+import turn_log
 from turn_timing import mark, span
 from .prompt import action_reasoner_prompt
 
 STATE_NO_FACE = "no face"
 STATE_SPEAK = "speak"
-STATE_BAD_INPUT = "bad input"
+STATE_BAD_INPUT = "speak"
 NO_CHANGE_RESPONSES = ("no change", "no change.")
 # Only "no change" means "whatever state this person is already in stands".
 #
@@ -228,7 +229,7 @@ class _Reasoner:
         try:
             with span("reasoner.classify_llm"):
                 response = ChatGPT.send_text(total_prompt, stream=False)
-            print("The response is ", response)
+            turn_log.step("classify", f"{response.model} -> {response.choices[0].message.content!r}")
         except Exception as e:
             print("chatgpt failed ", e)
             with span("reasoner.classify_llm_fallback"):
@@ -253,7 +254,7 @@ class _Reasoner:
 
         if response_text not in NO_CHANGE_RESPONSES:
             person_details.set_attribute("state", response_text)
-            print("Person State:", person_details.get_attribute("state"))
+            turn_log.debug(f"person state: {person_details.get_attribute('state')}")
 
         person_details.set_latest_usr_message(user_prompt[0])
         return person_details
