@@ -29,12 +29,14 @@ class FakeFaceRecognition:
         self.min_area = 4500
         self.votes = None
         self.relaxed = None
+        self.relaxed_calls = 0
         self.bbox = None
 
     def get_most_frequent_face_id(self):
         return self.votes
 
     def recognize_face_relaxed(self, image):
+        self.relaxed_calls += 1
         return self.relaxed
 
     def add2face_img_queue(self, image):
@@ -275,6 +277,26 @@ with contextlib.redirect_stdout(captured):
     manager._text_chunk(g1_action_payload("", "none"), "g1_action")
 check.equal("names an empty reply", "[voice] skipped_empty_reply" in captured.getvalue(), True)
 voice.speech = "U1BFRUNI"
+
+check.section("filler-only turns stay quiet")
+for filler in ("Um...", "Oh.", "Uh, hmm", "  Hmm?  ", "mhm"):
+    check.equal(f"{filler!r} is filler", manager._is_filler_only(filler), True)
+for real in ("Um, hello", "Oh no", "Iris", "I love chess", "You", "", "..."):
+    check.equal(f"{real!r} is not filler", manager._is_filler_only(real), False)
+
+quiet = manager._quiet_chunk()
+check.equal("speaks the G1 contract", quiet[1], "g1_action")
+quiet_payload = json.loads(quiet[0])
+check.equal("says nothing", quiet_payload["reply"], "")
+check.equal("does nothing", quiet_payload["action"], "none")
+
+filler_turn = list(manager._getting_response({"fake_transcription": "Um...", "image_data": np.zeros((4, 4, 3), dtype=np.uint8)}))
+check.equal("filler turn yields one quiet chunk", len(filler_turn), 1)
+check.equal("it is silent, not the listening fallback",
+            json.loads(filler_turn[0][0]), {"reply": "", "action": "none"})
+relaxed_calls_before = face_recognition.relaxed_calls
+list(manager._getting_response({"fake_transcription": "Um...", "image_data": np.zeros((4, 4, 3), dtype=np.uint8)}))
+check.equal("it never reached the face stage", face_recognition.relaxed_calls, relaxed_calls_before)
 
 check.section("transcription")
 check.equal("silence becomes a placeholder",

@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import string
 from typing import NamedTuple, Optional
 import cv2
 import time
@@ -68,6 +69,14 @@ UNCONFIRMED_FACE_STATE = "face unconfirmed"
 # reasoner on its normal path, where the prompt classifies it as bad input.
 MIN_USABLE_TRANSCRIPTION_LEN = 2
 SILENCE_PLACEHOLDER = "You"
+
+# Sounds Whisper writes down for a breath, a hesitation or the tail of Iris's
+# own voice. A turn made only of these has nothing to answer, and replying "I
+# did not catch that" to it made Iris talk to nobody.
+FILLER_WORDS = frozenset({
+    "um", "umm", "uh", "uhh", "er", "erm", "hm", "hmm", "hmmm", "mm", "mmm",
+    "mhm", "ah", "oh", "huh",
+})
 
 # Served by image_viewer on :8003 for debugging what the pipeline just saw.
 CURRENT_FRAME_PATH = "/workspace/display_imgs/some.jpg"
@@ -143,6 +152,18 @@ class MediaManager(MediaServiceServicer):
             transcription = SILENCE_PLACEHOLDER
         print(f"Transcription: {transcription}")
         return transcription
+
+    @staticmethod
+    def _is_filler_only(transcription):
+        words = [word.strip(string.punctuation).lower() for word in transcription.split()]
+        words = [word for word in words if word]
+        return bool(words) and all(word in FILLER_WORDS for word in words)
+
+    def _quiet_chunk(self):
+        """An explicit silence: an empty reply turns into "could you repeat
+        that?" with a head scratch unless the contract says nothing on purpose."""
+        print(f"\n[g1_action] filler-only turn; staying quiet, action={ACTION_NONE}")
+        return (g1_action_payload("", ACTION_NONE), G1_ACTION_MODE)
 
     def _face_id_from_stream_votes(self, image):
         """Vote over recently streamed frames, then retry on this request's."""
@@ -261,6 +282,10 @@ class MediaManager(MediaServiceServicer):
         try:
             with span("transcribe"):
                 transcription = self._transcribe(audio_img_item)
+            if self._is_filler_only(transcription):
+                mark("route", "filler")
+                yield self._quiet_chunk()
+                return
 
             image = audio_img_item.get("image_data")
             with span("write_debug_frame"):
