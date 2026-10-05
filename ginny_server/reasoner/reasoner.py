@@ -45,7 +45,7 @@ class _Reasoner:
         else:
             if face_class in {"side_face", "no_face", "slight_side_face"}:
                 return "bad input"
-        return response_text
+        return "speak"
 
     def __call__(self, transcription, face_id: Optional[str], img=None) -> PersonDetails:
         """
