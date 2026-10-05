@@ -161,6 +161,36 @@ check.equal("detector fault still answers",
 check.equal("missing frame still answers",
             no_face_reply(FakePersonDetector(frame), None) in no_face_replies, True)
 
+check.section("thanks is a courtesy, not bad input")
+from reasoner.reasoner import _is_pure_thanks
+for thanks in ("Thank you.", "thanks", "Thanks, Iris!", "Thank you very much", "THANK YOU SO MUCH.", "cheers"):
+    check.equal(f"{thanks!r} is pure thanks", _is_pure_thanks(thanks), True)
+for other in ("Thank you for the dance", "thanks, now wave", "no thank you", "You", "", "thank"):
+    check.equal(f"{other!r} is not pure thanks", _is_pure_thanks(other), False)
+
+thanks_person = PersonDetails({"state": "speak", "face_id": "f1"})
+routed = reasoner._route_thanks(thanks_person, "Thank you.", [{"role": "user", "content": "Thank you."}])
+check.equal("gate routes thanks", routed.get_attribute("state"), "thanks")
+check.equal("gate ignores a real request",
+            reasoner._route_thanks(PersonDetails({"state": "speak"}), "thanks, now wave", [{}]), None)
+check.equal("gate runs before the classifier",
+            reasoner._routed_by_gates(PersonDetails({"state": "speak", "face_id": "f1"}), "Thank you.",
+                                      [{"role": "user", "content": "Thank you."}]).get_attribute("state"),
+            "thanks")
+check.equal("route thanks", find_best_match("thanks", api_call.keys()), "thanks")
+
+thanks_replies = sys.modules["apis.thanks"].THANKS_REPLIES
+seen = set()
+for _ in range(60):
+    chunk = list(api_call["thanks"](thanks_person))
+    reply_payload = json.loads(chunk[0].textchunk)
+    seen.add(reply_payload["reply"])
+    check_action = reply_payload["action"]
+check.equal("every reply is from the rotation", seen <= set(thanks_replies), True)
+check.equal("rotates", len(seen) > 1, True)
+check.equal("never asks for a repeat", any("catch" in r.lower() or "repeat" in r.lower() for r in thanks_replies), False)
+check.equal("does nothing physical", check_action, "none")
+
 check.section("g1 gesture api")
 gesture_chunks = list(api_call["g1 wave"](PersonDetails({"state": "g1 wave", "face_id": "f1"})))
 check.equal("one chunk", len(gesture_chunks), 1)
@@ -472,7 +502,7 @@ check.equal("Pepper auto package is gone",
 for state, api in api_call.items():
     check.equal(f"{state!r} never emits joint angles",
                 type(api).__name__ in {"_Speaking", "_Silent", "_PersonAttribute",
-                                       "_BadInput", "_NoFace", "_FaceUnconfirmed",
+                                       "_BadInput", "_NoFace", "_FaceUnconfirmed", "_Thanks",
                                        "_UnsupportedAction",
                                        "_SecondaryChannel", "_G1Gesture"}, True)
 

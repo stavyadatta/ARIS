@@ -4,6 +4,7 @@ from .silent import _Silent
 from .person_attr import _PersonAttribute
 from .bad_input import _BadInput
 from .no_face import _NoFace
+from .thanks import _Thanks
 from .face_unconfirmed import _FaceUnconfirmed
 from .unsupported_action import _UnsupportedAction
 from .secondary_channel import _SecondaryChannel
@@ -14,6 +15,7 @@ Silent = _Silent()
 PersonAttribute = _PersonAttribute()
 BadInput = _BadInput()
 NoFace = _NoFace()
+Thanks = _Thanks()
 FaceUnconfirmed = _FaceUnconfirmed()
 UnsupportedAction = _UnsupportedAction()
 SecondaryChannel = _SecondaryChannel()
@@ -33,6 +35,7 @@ api_call: dict[str, ApiBase] = {
     "standard movement": UnsupportedAction,
     "bad input": BadInput,
     "no face": NoFace,
+    "thanks": Thanks,
     "face unconfirmed": FaceUnconfirmed,
     "object find": SecondaryChannel,
     "g1 wave": G1Gesture,

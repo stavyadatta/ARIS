@@ -11,6 +11,7 @@ from .prompt import action_reasoner_prompt
 
 STATE_NO_FACE = "no face"
 STATE_SPEAK = "speak"
+STATE_THANKS = "thanks"
 STATE_BAD_INPUT = "speak"
 NO_CHANGE_RESPONSES = ("no change", "no change.")
 # Only "no change" means "whatever state this person is already in stands".
@@ -65,6 +66,23 @@ def _weighted_choice(options: dict) -> str:
 
 def _words_in(text: str) -> list:
     return re.findall(r"[a-z]+", text.lower())
+
+
+# A turn made only of these is a courtesy. The robot's own name may be tacked on
+# ("thanks Iris"); anything else ("thanks for the dance, now wave") is a real
+# request and goes through the normal gates and classifier.
+_THANKS_PHRASES = frozenset({
+    "thank you", "thanks", "thank you very much", "thank you so much",
+    "thanks a lot", "thanks so much", "many thanks", "thank you kindly",
+    "cheers",
+})
+_ROBOT_NAME = "iris"
+
+
+def _is_pure_thanks(transcription: str) -> bool:
+    words = re.sub(r"[^a-z\s']", " ", transcription.lower()).split()
+    phrase = " ".join(word for word in words if word != _ROBOT_NAME)
+    return phrase in _THANKS_PHRASES
 
 
 def _has_request_marker(text: str) -> bool:
@@ -214,12 +232,20 @@ class _Reasoner:
             f"confirmation_needed={gesture}",
         )
 
+    def _route_thanks(self, person_details: PersonDetails, transcription: str,
+                      user_prompt: list) -> Optional[PersonDetails]:
+        if not _is_pure_thanks(transcription):
+            return None
+        return self._route(person_details, STATE_THANKS, user_prompt,
+                           f"[thanks] transcription={transcription!r}")
+
     def _routed_by_gates(self, person_details: PersonDetails, transcription: str,
                          user_prompt: list) -> Optional[PersonDetails]:
         """Try each deterministic gate in priority order, cheapest intent first."""
         for route in (self._answer_pending_confirmation,
                       self._route_requested_gesture,
-                      self._route_uncertain_gesture):
+                      self._route_uncertain_gesture,
+                      self._route_thanks):
             routed = route(person_details, transcription, user_prompt)
             if routed is not None:
                 return routed
