@@ -84,7 +84,7 @@ class FakeStreamRequest:
 
 
 check.section("executor routing")
-for state in ["no face", "bad input", "speak", "g1 wave", "g1 confirm wave", "vision"]:
+for state in ["no face", "bad input", "speak", "g1 wave", "g1 sequence", "g1 confirm wave", "vision"]:
     check.equal(f"route {state!r}", find_best_match(state, api_call.keys()), state)
 
 check.section("reasoner: no face short-circuit")
@@ -94,11 +94,11 @@ check.equal("face_id None -> no face",
             "no face")
 
 check.section("reasoner: explicit gesture requests")
-check.equal("wave", reasoner._requested_g1_gesture("can you wave at me"), "g1 wave")
-check.equal("handshake", reasoner._requested_g1_gesture("please shake hands"), "g1 handshake")
-check.equal("high five", reasoner._requested_g1_gesture("can you give a high five"), "g1 high five")
-check.equal("narration ignored", reasoner._requested_g1_gesture("she waved goodbye"), None)
-check.equal("no request marker ignored", reasoner._requested_g1_gesture("wave"), None)
+check.equal("wave", reasoner._requested_g1_gestures("can you wave at me"), ["g1 wave"])
+check.equal("handshake", reasoner._requested_g1_gestures("please shake hands"), ["g1 handshake"])
+check.equal("high five", reasoner._requested_g1_gestures("can you give a high five"), ["g1 high five"])
+check.equal("narration ignored", reasoner._requested_g1_gestures("she waved goodbye"), [])
+check.equal("no request marker ignored", reasoner._requested_g1_gestures("wave"), [])
 
 check.section("reasoner: mis-heard gesture requests ask before acting")
 for heard in ["wait", "waive", "weave", "wade"]:

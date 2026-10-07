@@ -51,6 +51,18 @@ def add_iris_server_to_path():
         sys.path.insert(0, IRIS_SERVER_PATH)
 
 
+def stub_neo4j_database():
+    """Make `utils` importable without a database.
+
+    utils/__init__.py connects to Neo4j when it is imported, so every suite that
+    touches it otherwise needs Iris's own database running. Use for tests whose
+    subject is routing or the reply contract rather than what gets persisted.
+    """
+    module = types.ModuleType("utils.neo4j_db")
+    module._Neo4j = _InertModel
+    sys.modules["utils.neo4j_db"] = module
+
+
 def stub_core_api_models(face_recognition=None, transcribe=None, kokoro_tts=None):
     """Replace core_api wholesale with stand-ins for the model singletons.
 
