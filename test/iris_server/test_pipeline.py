@@ -94,11 +94,16 @@ check.equal("face_id None -> no face",
             "no face")
 
 check.section("reasoner: explicit gesture requests")
-check.equal("wave", reasoner._requested_g1_gestures("can you wave at me"), ["g1 wave"])
-check.equal("handshake", reasoner._requested_g1_gestures("please shake hands"), ["g1 handshake"])
-check.equal("high five", reasoner._requested_g1_gestures("can you give a high five"), ["g1 high five"])
-check.equal("narration ignored", reasoner._requested_g1_gestures("she waved goodbye"), [])
-check.equal("no request marker ignored", reasoner._requested_g1_gestures("wave"), [])
+def requested_states(sentence):
+    request = reasoner._physical_request(sentence)
+    return list(request.states) if request else []
+
+
+check.equal("wave", requested_states("can you wave at me"), ["g1 wave"])
+check.equal("handshake", requested_states("please shake hands"), ["g1 handshake"])
+check.equal("high five", requested_states("can you give a high five"), ["g1 high five"])
+check.equal("narration ignored", requested_states("she waved goodbye"), [])
+check.equal("no request marker ignored", requested_states("wave"), [])
 
 check.section("reasoner: mis-heard gesture requests ask before acting")
 for heard in ["wait", "waive", "weave", "wade"]:

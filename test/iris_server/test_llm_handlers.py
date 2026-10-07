@@ -8,6 +8,7 @@ the server calls on them.
 
 import importlib
 import inspect
+import os
 
 import numpy as np
 
@@ -28,7 +29,7 @@ for name in ["_encode_image", "develop_last_message", "process_image_and_text",
              "_develop_image_system_prompt", "send_text", "img_text_response"]:
     check.equal(f"chatgpt.{name}", callable(getattr(chatgpt, name, None)), True)
     check.equal(f"grok.{name}", callable(getattr(grok, name, None)), True)
-for name in ["send_o1", "send_text_get_json", "get_openai_embedding"]:
+for name in ["send_o1", "send_text_get_json", "send_structured", "get_openai_embedding"]:
     check.equal(f"chatgpt.{name} (chatgpt only)", callable(getattr(chatgpt, name, None)), True)
 
 check.section("each handler keeps its own model")
@@ -64,5 +65,42 @@ check.equal("model_name defers to the handler", signature.parameters["model_name
 check.equal("max_tokens unchanged", signature.parameters["max_tokens"].default, 1000)
 check.equal("grok accepts model_name too",
             "model_name" in inspect.signature(grok.process_image_and_text).parameters, True)
+
+check.section("structured request for the gesture planner")
+
+
+class RecordingClient:
+    """Captures how the handler configured and sent the request; sends nothing."""
+
+    def __init__(self):
+        self.options = None
+        self.request = None
+        self.chat = self
+        self.completions = self
+
+    def with_options(self, **options):
+        self.options = options
+        return self
+
+    def create(self, **request):
+        self.request = request
+        message = type("Message", (), {"content": '{"steps": []}'})()
+        return type("Response", (), {"choices": [type("Choice", (), {"message": message})()]})()
+
+
+planner_handler = _OpenAIHandler()
+planner_handler.client = RecordingClient()
+schema = {"type": "json_schema", "json_schema": {"name": "x", "strict": True, "schema": {}}}
+reply = planner_handler.send_structured([{"role": "user", "content": "hi"}], schema,
+                                        max_tokens=77, timeout=3)
+check.equal("returns the reply text", reply, '{"steps": []}')
+check.equal("deterministic", planner_handler.client.request["temperature"], 0)
+check.equal("schema passed through untouched", planner_handler.client.request["response_format"], schema)
+check.equal("token ceiling passed", planner_handler.client.request["max_tokens"], 77)
+check.equal("short timeout and no retry", planner_handler.client.options, {"timeout": 3, "max_retries": 0})
+check.equal("planner model defaults to the chat model unless IRIS_PLANNER_MODEL is set",
+            planner_handler.client.request["model"],
+            os.environ.get("IRIS_PLANNER_MODEL") or importlib.import_module(
+                "core_api.chatgpt.chatgpt").DEFAULT_CHAT_MODEL)
 
 check.report("LLM HANDLERS OK")
