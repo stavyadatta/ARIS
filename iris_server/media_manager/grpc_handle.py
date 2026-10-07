@@ -321,12 +321,14 @@ class MediaManager(MediaServiceServicer):
         except ValueError:
             return payload
         reply = fields.get("reply", "")
-        turn_log.said(reply, fields.get("action", ACTION_NONE))
+        action = fields.get("action", ACTION_NONE)
+        actions = fields.get("actions", ())
+        turn_log.said(reply, ", ".join(actions) if actions else action)
         started_at = time.perf_counter()
         with span("kokoro_tts"):
             speech = KokoroTts.speech_base64(reply)
         self._report_voice(reply, speech, time.perf_counter() - started_at)
-        return g1_action_payload(reply, fields.get("action", ACTION_NONE), speech=speech)
+        return g1_action_payload(reply, action, speech=speech, actions=actions)
 
     def _report_voice(self, reply, speech, seconds_taken):
         """Say whether the robot got a voice, and what it cost to make.

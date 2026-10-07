@@ -3,7 +3,14 @@ import random
 import re
 from typing import Optional
 
-from utils import Neo4j, PersonDetails, message_format
+from utils import (
+    G1_SEQUENCE_ATTRIBUTE,
+    G1_SEQUENCE_STATE,
+    MAX_ACTIONS_PER_REQUEST,
+    Neo4j,
+    PersonDetails,
+    message_format,
+)
 from core_api import Llama, ChatGPT, Grok
 import turn_log
 from turn_timing import mark, span
@@ -43,6 +50,22 @@ _GESTURE_FAMILY_WEIGHTS = {
 _GESTURE_REQUEST_MARKERS = (
     "please", "can you", "could you", "would you", "will you",
     "give me", "do a", "do an",
+)
+
+# The phrases that name each gesture the gate may start. The first mention of
+# any of a gesture's phrases fixes its place in a sequence, so a request is
+# performed in the order it was spoken. "dj" is matched as a whole word so it
+# cannot fire from inside another word.
+_G1_GESTURE_PHRASES = (
+    ("g1 high five", r"high five|high-five"),
+    ("g1 handshake", r"handshake|shake my hand|shake hands"),
+    ("g1 wave", r"wave"),
+    ("g1 waist drum dance", r"dance"),
+    ("g1 spin discs", r"(?<![a-z])dj(?![a-z])|spin disc|play records"),
+    ("g1 throw money", r"throw money|throw cash|make it rain"),
+)
+_G1_GESTURE_PATTERNS = tuple(
+    (state, re.compile(phrases)) for state, phrases in _G1_GESTURE_PHRASES
 )
 
 _CONFIRMATION_REPLIES = frozenset({
@@ -89,6 +112,16 @@ def _has_request_marker(text: str) -> bool:
     return any(marker in text for marker in _GESTURE_REQUEST_MARKERS)
 
 
+def _gestures_in_spoken_order(text: str) -> list:
+    """Each gesture named in `text`, once, ordered by where it is first named."""
+    first_mention = {}
+    for state, pattern in _G1_GESTURE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            first_mention[state] = match.start()
+    return sorted(first_mention, key=first_mention.get)
+
+
 class _Reasoner:
     def __init__(self):
         """
@@ -118,29 +151,20 @@ class _Reasoner:
         user_prompt = message_format("user", text)
         return [user_prompt]
 
-    def _requested_g1_gesture(self, transcription: str) -> Optional[str]:
-        """Return one allow-listed G1 gesture for an explicit spoken request.
+    def _requested_g1_gestures(self, transcription: str) -> list:
+        """Return the allow-listed G1 gestures an explicit spoken request names.
 
         Physical intents must not depend on a best-effort LLM classification.
-        Whisper supplies the text; this small, auditable gate accepts only the
-        three gestures the G1 client will later validate independently.
+        Whisper supplies the text; this small, auditable gate accepts only
+        gestures the G1 client will later validate independently. They come
+        back in the order the person said them, at most
+        MAX_ACTIONS_PER_REQUEST of them, or an empty list when this is not a
+        request.
         """
         text = transcription.lower()
         if not _has_request_marker(text):
-            return None
-        if "high five" in text or "high-five" in text:
-            return "g1 high five"
-        if "handshake" in text or "shake my hand" in text or "shake hands" in text:
-            return "g1 handshake"
-        if "wave" in text:
-            return "g1 wave"
-        if "dance" in text:
-            return "g1 waist drum dance"
-        if "dj" in _words_in(text) or "spin disc" in text or "play records" in text:
-            return "g1 spin discs"
-        if "throw money" in text or "throw cash" in text or "make it rain" in text:
-            return "g1 throw money"
-        return None
+            return []
+        return _gestures_in_spoken_order(text)[:MAX_ACTIONS_PER_REQUEST]
 
     def _uncertain_g1_gesture(self, transcription: str) -> Optional[str]:
         """Return a confirmation-only gesture candidate, never an action."""
@@ -208,14 +232,30 @@ class _Reasoner:
     def _route_requested_gesture(self, person_details: PersonDetails,
                                  transcription: str,
                                  user_prompt: list) -> Optional[PersonDetails]:
-        gesture_state = self._requested_g1_gesture(transcription)
-        if gesture_state is None:
+        gestures = self._requested_g1_gestures(transcription)
+        if not gestures:
             return None
+        if len(gestures) > 1:
+            return self._route_gesture_sequence(
+                person_details, gestures, transcription, user_prompt
+            )
         return self._route(
             person_details,
-            gesture_state,
+            gestures[0],
             user_prompt,
-            f"[g1_action] transcription={transcription!r} route={gesture_state}",
+            f"[g1_action] transcription={transcription!r} route={gestures[0]}",
+        )
+
+    def _route_gesture_sequence(self, person_details: PersonDetails,
+                                gestures: list, transcription: str,
+                                user_prompt: list) -> PersonDetails:
+        person_details.set_attribute(G1_SEQUENCE_ATTRIBUTE, gestures)
+        return self._route(
+            person_details,
+            G1_SEQUENCE_STATE,
+            user_prompt,
+            f"[g1_action] transcription={transcription!r} "
+            f"route={G1_SEQUENCE_STATE} gestures={gestures}",
         )
 
     def _route_uncertain_gesture(self, person_details: PersonDetails,

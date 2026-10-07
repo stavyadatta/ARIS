@@ -49,6 +49,7 @@ api_call: dict[str, ApiBase] = {
     "g1 waist drum dance": G1Gesture,
     "g1 spin discs": G1Gesture,
     "g1 throw money": G1Gesture,
+    "g1 sequence": G1Gesture,
     "g1 confirm wave": G1Gesture,
     "g1 confirm handshake": G1Gesture,
     "g1 confirm high five": G1Gesture,

@@ -11,6 +11,9 @@ from utils import (
     ApiObject,
     G1_ACTION_ERROR_MODE,
     G1_ACTION_MODE,
+    G1_SEQUENCE_ATTRIBUTE,
+    G1_SEQUENCE_STATE,
+    MAX_ACTIONS_PER_REQUEST,
     Neo4j,
     PersonDetails,
     g1_action_payload,
@@ -106,7 +109,9 @@ class _G1Gesture(ApiBase):
         if state in G1_CONFIRMATIONS:
             yield self._ask_for_confirmation(person_details, state)
         elif state in G1_GESTURES:
-            yield self._perform_gesture(person_details, state)
+            yield self._perform_gestures(person_details, [state])
+        elif state == G1_SEQUENCE_STATE:
+            yield self._perform_requested_sequence(person_details)
         else:
             yield self._reject_unknown_state(state)
             return
@@ -137,24 +142,51 @@ class _G1Gesture(ApiBase):
             g1_action_payload(question, ACTION_NONE), mode=G1_ACTION_MODE
         )
 
-    def _perform_gesture(self, person_details: PersonDetails,
-                         state: str) -> ApiObject:
-        gesture = G1_GESTURES[state]
-        reply = self._spoken_reply_for(person_details, gesture)
+    def _perform_requested_sequence(self, person_details: PersonDetails
+                                    ) -> ApiObject:
+        """Perform the gestures the reasoner queued, or none if they are unsound.
+
+        The reasoner already vetted them, but a wrong gesture is a physical
+        event, so anything out of shape is rejected rather than trimmed to fit.
+        """
+        states = person_details.get_attribute(G1_SEQUENCE_ATTRIBUTE)
+        if not self._is_sound_sequence(states):
+            return self._reject_unknown_state(f"{G1_SEQUENCE_STATE} {states}")
+        return self._perform_gestures(person_details, states)
+
+    def _is_sound_sequence(self, states) -> bool:
+        return (
+            isinstance(states, list)
+            and 1 < len(states) <= MAX_ACTIONS_PER_REQUEST
+            and all(state in G1_GESTURES for state in states)
+        )
+
+    def _perform_gestures(self, person_details: PersonDetails,
+                          states: list) -> ApiObject:
+        gestures = [G1_GESTURES[state] for state in states]
+        actions = [gesture["action"] for gesture in gestures]
+        reply = self._spoken_reply_for(person_details, self._doing_in_order(gestures))
         self._remember_reply(person_details, reply)
         person_details.set_attribute("state", STATE_SPEAK)
-        turn_log.debug(f"gesture state={state} action={gesture['action']}")
+        turn_log.debug(f"gesture states={states} actions={actions}")
         return ApiObject(
-            g1_action_payload(reply, gesture["action"]),
+            g1_action_payload(reply, actions[0], actions=actions),
             mode=G1_ACTION_MODE,
         )
 
+    def _doing_in_order(self, gestures: list) -> str:
+        """Describe the whole request so one spoken line can cover all of it."""
+        doings = [gesture["doing"] for gesture in gestures]
+        if len(doings) == 1:
+            return doings[0]
+        return " and then ".join(doings) + ", one after the other,"
+
     def _spoken_reply_for(self, person_details: PersonDetails,
-                          gesture: dict) -> str:
+                          doing: str) -> str:
         return self._generated_line(
             person_details,
             f"""
-            You are {gesture["doing"]} right now, because they asked you to.
+            You are {doing} right now, because they asked you to.
 
             React to what they actually said -- if they mentioned news, a
             feeling or a reason, respond to that, not just to the gesture. Do
