@@ -69,6 +69,32 @@ check.equal("DJ is a word of its own",
 check.equal("case is ignored",
             gestures("Please WAVE and then DANCE"), [WAVE, DANCE])
 
+check.section("two gesture words are not a sequence without a sequencing word")
+check.equal("dance like a DJ is one dance",
+            gestures("please dance like a DJ"), [DANCE])
+check.equal("the wave dance is one wave",
+            gestures("please do the wave dance"), [WAVE])
+check.equal("'do the wave dance' alone has no request marker, as before",
+            gestures("do the wave dance"), [])
+check.equal("a comma alone does not chain",
+            gestures("please wave, dance"), [WAVE])
+check.equal("a bare 'and' does",
+            gestures("please wave and dance"), [WAVE, DANCE])
+check.equal("the same gesture twice is one",
+            gestures("please dance and then dance"), [DANCE])
+check.equal("each sequencing word chains",
+            [gestures(f"please wave {word} dance") for word in
+             ("then", "and then", "after that", "afterwards", "next", "followed by")],
+            [[WAVE, DANCE]] * 6)
+check.equal("'and' inside another word does not chain",
+            gestures("please wave handsomely dance"), [WAVE])
+check.equal("the chain stops where the sequencing word stops",
+            gestures("please wave and dance like a DJ"), [WAVE, DANCE])
+check.equal("an unchained pair falls back to the old priority order",
+            gestures("please dance, then shake my hand like a DJ"), [DANCE, HANDSHAKE])
+check.equal("an unchained first pair is the old priority pick",
+            gestures("can you dance, wave and then shake my hand"), [HANDSHAKE])
+
 check.section("single gesture is unchanged")
 check.equal("wave", gestures("can you wave at me"), [WAVE])
 check.equal("handshake", gestures("please shake hands"), [HANDSHAKE])
