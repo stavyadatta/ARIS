@@ -88,7 +88,16 @@ for state in ["no face", "bad input", "speak", "g1 wave", "g1 sequence", "g1 con
     check.equal(f"route {state!r}", find_best_match(state, api_call.keys()), state)
 
 check.section("reasoner: no face short-circuit")
-reasoner = _Reasoner()
+
+
+def planner_is_offline(messages, schema):
+    """Every wave/handshake/high-five request now asks the planner; here it is down."""
+    raise ConnectionError("no network in tests")
+
+
+# With the planner down, a request that names one gesture is performed by the
+# deterministic single-gesture fallback, which is what these checks cover.
+reasoner = _Reasoner(ask_planner_model=planner_is_offline)
 check.equal("face_id None -> no face",
             reasoner(transcription="hello iris", face_id=None).get_attribute("state"),
             "no face")

@@ -17,6 +17,10 @@ the allow list again here. The outcome is one of three types:
                       possible
   CouldNotPlan        the reply was unusable; the caller falls back to the
                       deterministic single-gesture pick
+  NoStepsRequested    a CouldNotPlan the model answered on purpose: the person
+                      asked for no physical step (a gesture word in narration).
+                      The caller must NOT fall back, or narration would move
+                      the robot
 
 There is no limit on the number of steps. The only bound is that the whole
 reply must fit in PLANNER_MAX_TOKENS; a longer one is cut off mid-JSON and is
@@ -68,6 +72,17 @@ class CouldNotPlan:
     """Nothing trustworthy came back; `reason` says why, for the log."""
 
     reason: str
+
+
+@dataclass(frozen=True)
+class NoStepsRequested(CouldNotPlan):
+    """The model read the sentence and found no physical step in it.
+
+    A subclass so that code which only knows CouldNotPlan still treats it as
+    "no queue", while the reasoner can tell it from a real failure.
+    """
+
+    reason: str = "no physical step requested"
 
 
 def response_format() -> dict:
@@ -169,9 +184,9 @@ def _classified(step):
 
 
 def _outcome_for(steps: list):
-    """PlannedQueue, UnsupportedRequest or CouldNotPlan for a parsed step list."""
+    """PlannedQueue, UnsupportedRequest or CouldNotPlan (NoStepsRequested if empty)."""
     if not steps:
-        return CouldNotPlan("no physical step requested")
+        return NoStepsRequested()
     classified = [_classified(step) for step in steps]
     if None in classified:
         return CouldNotPlan(f"a step is malformed or not allow-listed: {steps!r}")

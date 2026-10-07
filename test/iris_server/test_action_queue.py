@@ -41,6 +41,7 @@ from media_manager.grpc_handle import MediaManager
 from apis.unsupported_action import UNSUPPORTED_ACTION_REPLIES, spoken_refusal_naming
 from reasoner.action_planner import (
     CouldNotPlan,
+    NoStepsRequested,
     PlannedQueue,
     SCHEMA_NAME,
     UnsupportedRequest,
@@ -102,43 +103,34 @@ def gestures(text):
     return list(request.states) if isinstance(request, PlannedQueue) else []
 
 
-check.section("one gesture word and no sequencing word: deterministic, no model call")
+check.section("the planner is asked only when a request marker AND a gesture word are present")
+CATS_AND_DOGS = "Can you tell me about cats and dogs"
 planner_model.calls.clear()
-check.equal("wave", gestures("can you wave at me"), [WAVE])
-check.equal("handshake", gestures("please shake hands"), [HANDSHAKE])
-check.equal("high five", gestures("can you give a high five"), [HIGH_FIVE])
-check.equal("dance", gestures("could you dance"), [DANCE])
-check.equal("throw money", gestures("please make it rain"), ["g1 throw money"])
+for label, sentence in [
+    ("the owner's 'cats and dogs' example", CATS_AND_DOGS),
+    ("no marker, gestures named", "shake my hand and then dance"),
+    ("no marker, narration", "and then she waved goodbye and danced"),
+    ("no marker, a bare gesture word", "wave"),
+    ("a marker and zero gesture words", "can you go over there and sit"),
+    ("a marker and zero gesture words, with a sequencing word", "please sit and then stand"),
+    ("a marker and not a gesture", "please tell me a joke"),
+    ("dj inside a word", "please tell me about djibouti"),
+]:
+    check.equal(f"{label}: no gesture queue", gestures(sentence), [])
+    check.equal(f"{label}: no refusal either", reasoner._physical_request(sentence), None)
 check.equal("the planner was never called", planner_model.calls, [])
 
-check.section("no request marker: never the planner")
-check.equal("gestures without a marker", gestures("shake my hand and then dance"), [])
-check.equal("narration", gestures("and then she waved goodbye and danced"), [])
-check.equal("a sequencing word alone", gestures("and then we left"), [])
-check.equal("not a gesture", gestures("please tell me a joke"), [])
-check.equal("dj inside a word", gestures("please tell me about djibouti"), [])
-check.equal("the planner was never called either", planner_model.calls, [])
-
-check.section("when the planner is asked")
 planner_model.answers("wave")
 for label, sentence in [
+    ("one gesture word", "please wave"),
+    ("one gesture word, plain request", "can you wave at me"),
+    ("one gesture word with a hidden second step", "can you wave and then walk to the door"),
     ("two gesture words", "please dance like a DJ"),
-    ("one gesture word and a sequencing word", "can you wave and say hello"),
-    ("a sequencing word and no gesture word", "can you go over there and then sit"),
+    ("a gesture word in narration", "can you tell me how she waved"),
 ]:
     planner_model.calls.clear()
-    gestures(sentence)
-    check.equal(f"{label}: asked once", len(planner_model.calls), 1)
-for word in ("and", "then", "and then", "after that", "afterwards", "next", "followed by"):
-    planner_model.calls.clear()
-    gestures(f"please sit {word} stand")
-    check.equal(f"sequencing word {word!r} triggers the planner", len(planner_model.calls), 1)
-planner_model.calls.clear()
-gestures("could you wave")
-gestures("could you wait a moment")
-check.equal("'and' inside another word does not trigger",
-            gestures("could you wave at the band"), [WAVE])
-check.equal("... and neither did those", planner_model.calls, [])
+    reasoner._physical_request(sentence)
+    check.equal(f"{label}: asked exactly once", len(planner_model.calls), 1)
 
 check.section("several steps: the planner orders them")
 owner_sentence = "Can you dance, wave and then shake my hand"
@@ -166,15 +158,16 @@ check.equal("any allow-listed gesture may be planned, not only keyword ones",
             gestures("can you dance and wave, then hug me and clap"), ["g1 hug", "g1 clap"])
 
 check.section("no cap: a long queue is planned whole, in order")
+LONG_REQUEST = "please wave, dance and shake hands over and over, and then some more"
 long_actions = ["wave", "waist_drum_dance", "handshake"] * (LONG_QUEUE_LENGTH // 3) + ["hug"] * 2
 long_states = [WAVE, DANCE, HANDSHAKE] * (LONG_QUEUE_LENGTH // 3) + ["g1 hug"] * 2
 planner_model.answers(*long_actions)
 check.equal("fifty actions are accepted in order",
-            gestures("please do all of these and then some more"), long_states)
+            gestures(LONG_REQUEST), long_states)
 check.equal("fifty is not a special number", len(long_states), LONG_QUEUE_LENGTH)
 
 check.section("a step the robot cannot do: nothing is performed")
-owner_chores = "Can you go over there, pick up the towel, clean the table, then sit"
+owner_chores = "Can you wave, go over there, pick up the towel, clean the table, then sit"
 planner_model.answers_steps({"unsupported": "go over there"}, {"unsupported": "pick up the towel"},
                             {"unsupported": "clean the table"}, {"unsupported": "sit"})
 refusal = reasoner._physical_request(owner_chores)
@@ -190,15 +183,14 @@ check.equal("so no gesture is returned for it",
             gestures("please wave, pick up the towel, then shake my hand"), [])
 planner_model.answers_steps({"unsupported": "  clean the table  "})
 check.equal("the person's words are trimmed",
-            reasoner._physical_request("can you clean the table and then sit").steps,
+            reasoner._physical_request("can you wave and clean the table").steps,
             ("clean the table",))
 
-check.section("an untrustworthy plan falls back to the old single pick")
+check.section("an untrustworthy plan falls back to the single priority pick")
 # "dance" and "wave" are both named; the old priority order puts wave first.
 fallback_sentence = "can you dance and wave"
 for label, arrange in [
     ("unknown action", lambda: planner_model.answers("wave", "moonwalk")),
-    ("empty list", lambda: planner_model.answers()),
     ("model raises", lambda: planner_model.fails_with(TimeoutError("slow"))),
     ("not json", lambda: planner_model.answers_raw("sure, I will dance")),
     ("cut off mid-reply", lambda: planner_model.answers_raw('{"steps": [{"action": "wa')),
@@ -216,8 +208,25 @@ for label, arrange in [
     arrange()
     check.equal(f"{label}: one gesture, by priority", gestures(fallback_sentence), [WAVE])
 planner_model.fails_with(TimeoutError("slow"))
-check.equal("no gesture word and a failed plan: not a gesture request at all",
-            reasoner._physical_request("can you go over there and sit"), None)
+check.equal("a failed plan with one gesture word performs that gesture",
+            gestures("can you shake hands"), [HANDSHAKE])
+
+check.section("no steps from the planner: the gesture word was narration")
+NARRATION = "can you tell me how she waved"
+planner_model.answers()
+check.equal("an empty list is not a request, so the classifier handles it",
+            reasoner._physical_request(NARRATION), None)
+planner_model.calls.clear()
+check.equal("also when several gestures are named",
+            reasoner._physical_request("can you tell me how she waved and danced"), None)
+check.equal("each was one planner call", len(planner_model.calls), 1)
+check.equal("the empty list is reported as its own outcome",
+            type(plan_robot_steps(NARRATION, planner_model)), NoStepsRequested)
+check.equal("which is still a CouldNotPlan for code that only knows that",
+            isinstance(plan_robot_steps(NARRATION, planner_model), CouldNotPlan), True)
+planner_model.answers("wave")
+check.equal("the same words with a queue from the planner are performed",
+            gestures("can you wave"), [WAVE])
 
 check.section("planner: typed result")
 planner_model.answers("handshake", "waist_drum_dance")
@@ -322,7 +331,7 @@ check.equal("a single gesture is described as before",
 check.section("no cap: a long queue is routed, serialised and kept in order")
 planner_model.answers(*long_actions)
 long_person = reasoner._routed_by_gates(PersonDetails({"state": "speak", "face_id": "f1"}),
-                                        "please do all of these and then some more", user_prompt)
+                                        LONG_REQUEST, user_prompt)
 check.equal("routed as a sequence", long_person.get_attribute("state"), G1_SEQUENCE_STATE)
 check.equal("all fifty states carried, in order",
             long_person.get_attribute(G1_SEQUENCE_ATTRIBUTE), long_states)

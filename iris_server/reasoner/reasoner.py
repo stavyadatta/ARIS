@@ -16,6 +16,7 @@ from core_api import Llama, ChatGPT, Grok
 import turn_log
 from turn_timing import mark, span
 from .action_planner import (
+    NoStepsRequested,
     PlannedQueue,
     UnsupportedRequest,
     model_call_through,
@@ -59,10 +60,10 @@ _GESTURE_REQUEST_MARKERS = (
     "give me", "do a", "do an",
 )
 
-# The phrases that name each gesture the gate may start, listed in priority
-# order: when a request mentions several and the planner cannot sort them out,
-# the first one listed is the single gesture performed. "dj" is matched as a
-# whole word so it cannot fire from inside another word.
+# The phrases that name each gesture the gate may start. A request naming one
+# is shown to the planner; the order matters only when the planner fails, and
+# then the first one listed is the single gesture performed. "dj" is matched as
+# a whole word so it cannot fire from inside another word.
 _G1_GESTURE_PHRASES = (
     ("g1 high five", r"high five|high-five"),
     ("g1 handshake", r"handshake|shake my hand|shake hands"),
@@ -73,14 +74,6 @@ _G1_GESTURE_PHRASES = (
 )
 _G1_GESTURE_PATTERNS = tuple(
     (state, re.compile(phrases)) for state, phrases in _G1_GESTURE_PHRASES
-)
-
-# TRIGGER ONLY: a sentence that strings steps together ("go over there and pick
-# up the towel") may be a sequence even when it names no gesture, so one of
-# these sends it to the planner. This decides whether the model is asked, never
-# what the robot does; that is the planner's validated answer or nothing.
-_SEQUENCING_WORD = re.compile(
-    r"\b(?:and then|after that|afterwards|followed by|then|and|next)\b"
 )
 
 _CONFIRMATION_REPLIES = frozenset({
@@ -166,23 +159,32 @@ class _Reasoner:
     def _physical_request(self, transcription: str):
         """What an explicit spoken request asks the robot to do, or None.
 
-        Physical intents must not depend on a best-effort LLM classification.
-        The keyword gate stays the authority on whether this is a request at
-        all: it needs a request marker. A plain request for one gesture is then
-        answered without any model call. A request that names several, or
-        strings steps together, goes to the planner, whose answer is validated
-        before it is believed. Returns a PlannedQueue, an UnsupportedRequest
-        (do nothing, say what is not possible) or None (not a physical request).
+        Physical intents must not depend on a best-effort LLM classification,
+        so two keyword checks gate the model: the sentence needs a request
+        marker AND must name at least one gesture. Only then is the planner
+        asked, always, even for one gesture, so a step the robot cannot do
+        ("wave and then walk to the door") is caught instead of silently
+        dropped. No word list decides whether something is a sequence: that is
+        the planner's job. The planner's answer is validated before it is
+        believed. Returns a PlannedQueue, an UnsupportedRequest (do nothing,
+        say what is not possible) or None (not a physical request, so the
+        normal classifier handles the sentence).
         """
         text = transcription.lower()
         if not _has_request_marker(text):
             return None
         mentioned = _gestures_mentioned(text)
-        if len(mentioned) < 2 and not _SEQUENCING_WORD.search(text):
-            return PlannedQueue(tuple(mentioned)) if mentioned else None
+        if not mentioned:
+            return None
         return self._planned_or_single(transcription, mentioned)
 
     def _planned_or_single(self, transcription: str, mentioned: list):
+        """The planner's validated answer; the first-priority gesture if it fails.
+
+        `mentioned` is never empty here. An answer of "no steps" is the planner
+        saying the gesture word was only narration, which must not move the
+        robot, so it is not a failure and takes no fallback.
+        """
         outcome = plan_robot_steps(transcription, self._ask_planner_model)
         if isinstance(outcome, PlannedQueue):
             turn_log.step("plan", f"{list(outcome.states)}")
@@ -190,8 +192,8 @@ class _Reasoner:
         if isinstance(outcome, UnsupportedRequest):
             turn_log.step("plan", f"unsupported steps {list(outcome.steps)}; performing nothing")
             return outcome
-        if not mentioned:
-            turn_log.step("plan", f"could not plan ({outcome.reason}); not a gesture request")
+        if isinstance(outcome, NoStepsRequested):
+            turn_log.step("plan", "no physical step requested; not a gesture request")
             return None
         turn_log.step("plan", f"could not plan ({outcome.reason}); doing {mentioned[0]} only")
         return PlannedQueue((mentioned[0],))
