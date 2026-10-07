@@ -16,7 +16,8 @@ back to `ginny-server:latest`.
 | --- | --- |
 | `test_pipeline.py` | transcription, face-id resolution, reasoner routing and gesture gates, the G1 reply/action contract, `StreamImages`/`GetBbox`/`ClearQueue`/`ProcessAudioImg` |
 | `test_llm_handlers.py` | the ChatGPT and Grok handlers' shared vision plumbing and the methods the server calls on them |
-| `test_action_queue.py` | the G1 action queue: gesture ordering and sequencing words, the `actions` array of the reply contract, the gesture API and the voice step; stubs Neo4j, so it needs no database |
+| `test_action_queue.py` | the G1 action queue: the gesture gate, the step planner (fake model), unsupported steps, long queues, the `actions` array of the reply contract, the gesture API and the voice step; stubs Neo4j, so it needs no database |
+| `live_action_planner_check.py` | OPT-IN, not run by `run_tests.sh`: sends five sentences to the real planner model and prints the answers; spends API credits and needs `OPENAI_API_KEY` |
 | `harness.py` | import-path setup, core_api stubbing, pass/fail bookkeeping |
 
 ## Requirements
