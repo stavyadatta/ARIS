@@ -11,7 +11,9 @@ from .g1_action import (
     G1_ACTION_MODE,
     G1_SEQUENCE_ATTRIBUTE,
     G1_SEQUENCE_STATE,
-    MAX_ACTIONS_PER_REQUEST,
+    MIN_ACTIONS_FOR_SEQUENCE,
+    UNSUPPORTED_ACTION_STATE,
+    UNSUPPORTED_STEPS_ATTRIBUTE,
     g1_action_payload,
 )
 
@@ -35,10 +37,12 @@ __all__ = [
     "G1_ACTION_MODE",
     "G1_SEQUENCE_ATTRIBUTE",
     "G1_SEQUENCE_STATE",
-    "MAX_ACTIONS_PER_REQUEST",
+    "MIN_ACTIONS_FOR_SEQUENCE",
     "Neo4j",
     "PersonDetails",
     "SecondaryDetails",
+    "UNSUPPORTED_ACTION_STATE",
+    "UNSUPPORTED_STEPS_ATTRIBUTE",
     "g1_action_payload",
     "message_format",
 ]

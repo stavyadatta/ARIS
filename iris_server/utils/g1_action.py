@@ -22,11 +22,9 @@ G1_ACTION_ERROR_MODE = "g1_action_error"
 ACTION_NONE = "none"
 ACTION_SCRATCH_HEAD = "scratch_head"
 
-# Largest sequence one spoken request may chain. The G1 client enforces the
-# same cap (kMaxActionsPerRequest in conversation/g1_action_reply.hpp), so the
-# two numbers must agree: a longer sequence is refused whole over there.
-MAX_ACTIONS_PER_REQUEST = 3
 # `actions` is only sent from this length up; one action is just `action`.
+# There is no upper limit on a sequence: the only bound is the transport's
+# message size.
 MIN_ACTIONS_FOR_SEQUENCE = 2
 
 # The state a multi-gesture request is routed under. The gestures themselves
@@ -35,6 +33,12 @@ MIN_ACTIONS_FOR_SEQUENCE = 2
 # the wrong one -- or none -- and move the robot differently than asked.
 G1_SEQUENCE_STATE = "g1 sequence"
 G1_SEQUENCE_ATTRIBUTE = "g1_sequence"
+
+# A request with a step the robot cannot do is routed here instead, carrying the
+# person's words for each such step, so nothing at all is performed and the
+# reply says what is not possible.
+UNSUPPORTED_ACTION_STATE = "g1 unsupported action"
+UNSUPPORTED_STEPS_ATTRIBUTE = "unsupported_steps"
 
 
 def g1_action_payload(reply: str, action: str, speech: str = None,

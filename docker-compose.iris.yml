@@ -15,6 +15,7 @@
 #       NEO4J_PASSWORD=...
 #       GROK_API_KEY=...
 #       OPENAI_MODEL=gpt-4o-mini   (chat model; smaller = faster)
+#       IRIS_PLANNER_MODEL=...     (gesture-queue planner; defaults to OPENAI_MODEL)
 #       API_KEY=...
 #   The ${VAR:-} syntax below reads from that .env (or the shell env) and
 #   defaults to empty if missing, so the container always starts.
@@ -41,6 +42,7 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - IRIS_PLANNER_MODEL=${IRIS_PLANNER_MODEL:-${OPENAI_MODEL:-gpt-4o-mini}}
       - IRIS_LOG_VERBOSE=${IRIS_LOG_VERBOSE:-0}
       - IRIS_LOG_COLOR=${IRIS_LOG_COLOR:-1}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}

@@ -13,7 +13,7 @@ from utils import (
     G1_ACTION_MODE,
     G1_SEQUENCE_ATTRIBUTE,
     G1_SEQUENCE_STATE,
-    MAX_ACTIONS_PER_REQUEST,
+    MIN_ACTIONS_FOR_SEQUENCE,
     Neo4j,
     PersonDetails,
     g1_action_payload,
@@ -27,6 +27,11 @@ from .api_base import ApiBase
 # so there is nothing to stream and a blocking call costs no more than a
 # streamed one.
 GESTURE_REPLY_MAX_TOKENS = 40
+
+# How many steps of a long request the reply prompt spells out. Only the
+# prompt is shortened -- every step is still performed -- so the model is not
+# handed a paragraph to fit into one short sentence.
+STEPS_DESCRIBED_FOR_REPLY = 3
 
 
 # The reasoner may select only these states. `doing` describes the physical
@@ -157,7 +162,7 @@ class _G1Gesture(ApiBase):
     def _is_sound_sequence(self, states) -> bool:
         return (
             isinstance(states, list)
-            and 1 < len(states) <= MAX_ACTIONS_PER_REQUEST
+            and len(states) >= MIN_ACTIONS_FOR_SEQUENCE
             and all(state in G1_GESTURES for state in states)
         )
 
@@ -179,7 +184,10 @@ class _G1Gesture(ApiBase):
         doings = [gesture["doing"] for gesture in gestures]
         if len(doings) == 1:
             return doings[0]
-        return " and then ".join(doings) + ", one after the other,"
+        described = " and then ".join(doings[:STEPS_DESCRIBED_FOR_REPLY])
+        if len(doings) > STEPS_DESCRIBED_FOR_REPLY:
+            described += " and then the rest of what they asked"
+        return described + ", one after the other,"
 
     def _spoken_reply_for(self, person_details: PersonDetails,
                           doing: str) -> str:

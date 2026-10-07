@@ -6,7 +6,8 @@ from typing import Optional
 from utils import (
     G1_SEQUENCE_ATTRIBUTE,
     G1_SEQUENCE_STATE,
-    MAX_ACTIONS_PER_REQUEST,
+    UNSUPPORTED_ACTION_STATE,
+    UNSUPPORTED_STEPS_ATTRIBUTE,
     Neo4j,
     PersonDetails,
     message_format,
@@ -14,6 +15,12 @@ from utils import (
 from core_api import Llama, ChatGPT, Grok
 import turn_log
 from turn_timing import mark, span
+from .action_planner import (
+    PlannedQueue,
+    UnsupportedRequest,
+    model_call_through,
+    plan_robot_steps,
+)
 from .prompt import action_reasoner_prompt
 
 STATE_NO_FACE = "no face"
@@ -53,9 +60,9 @@ _GESTURE_REQUEST_MARKERS = (
 )
 
 # The phrases that name each gesture the gate may start, listed in priority
-# order: when a request does not chain gestures, the first one listed that it
-# mentions is the single gesture performed. "dj" is matched as a whole word so
-# it cannot fire from inside another word.
+# order: when a request mentions several and the planner cannot sort them out,
+# the first one listed is the single gesture performed. "dj" is matched as a
+# whole word so it cannot fire from inside another word.
 _G1_GESTURE_PHRASES = (
     ("g1 high five", r"high five|high-five"),
     ("g1 handshake", r"handshake|shake my hand|shake hands"),
@@ -68,10 +75,10 @@ _G1_GESTURE_PATTERNS = tuple(
     (state, re.compile(phrases)) for state, phrases in _G1_GESTURE_PHRASES
 )
 
-# A second gesture is only chained after the first when one of these sits
-# between the two mentions. Two gesture words alone are not a sequence --
-# "dance like a DJ" and "do the wave dance" each ask for one gesture, and every
-# extra gesture is a physical event, the dances being whole-body routines.
+# TRIGGER ONLY: a sentence that strings steps together ("go over there and pick
+# up the towel") may be a sequence even when it names no gesture, so one of
+# these sends it to the planner. This decides whether the model is asked, never
+# what the robot does; that is the planner's validated answer or nothing.
 _SEQUENCING_WORD = re.compile(
     r"\b(?:and then|after that|afterwards|followed by|then|and|next)\b"
 )
@@ -120,57 +127,20 @@ def _has_request_marker(text: str) -> bool:
     return any(marker in text for marker in _GESTURE_REQUEST_MARKERS)
 
 
-def _first_mention_of_each_gesture(text: str) -> dict:
-    """Each gesture named in `text` and where it is first named, in priority order."""
-    mentions = {}
-    for state, pattern in _G1_GESTURE_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            mentions[state] = match
-    return mentions
-
-
-def _is_sequenced(text: str, earlier: re.Match, later: re.Match) -> bool:
-    return _SEQUENCING_WORD.search(text, earlier.end(), later.start()) is not None
-
-
-def _gestures_chained_in_spoken_order(text: str, mentions: dict) -> list:
-    """The gestures the person strung together, in the order they said them.
-
-    The chain starts at the first mention and ends at the first pair of
-    consecutive mentions with no sequencing word between them.
-    """
-    by_position = sorted(mentions.items(), key=lambda item: item[1].start())
-    chain = [by_position[0]]
-    for state, match in by_position[1:]:
-        if not _is_sequenced(text, chain[-1][1], match):
-            break
-        chain.append((state, match))
-    return [state for state, _ in chain]
-
-
-def _gestures_requested_in(text: str) -> list:
-    """What `text` asks the robot to do: a chain of gestures, or else one.
-
-    Without a sequencing word the request is a single gesture, picked by
-    priority exactly as before gestures could be chained.
-    """
-    mentions = _first_mention_of_each_gesture(text)
-    if not mentions:
-        return []
-    chain = _gestures_chained_in_spoken_order(text, mentions)
-    if len(chain) > 1:
-        return chain
-    return [next(iter(mentions))]
+def _gestures_mentioned(text: str) -> list:
+    """Each gesture `text` names, once, in priority order."""
+    return [state for state, pattern in _G1_GESTURE_PATTERNS if pattern.search(text)]
 
 
 class _Reasoner:
-    def __init__(self):
+    def __init__(self, ask_planner_model=None):
         """
             Initializing the reasoner
-            :param llama_url: Endpoint for the llama.cpp
+            :param ask_planner_model: the model call that plans a queue of
+                gestures (see action_planner.ModelCall); ChatGPT by default.
+                Injected so tests never reach a network.
         """
-        pass
+        self._ask_planner_model = ask_planner_model or model_call_through(ChatGPT)
 
     def to_lowercase(self, input_string):
         """
@@ -193,20 +163,38 @@ class _Reasoner:
         user_prompt = message_format("user", text)
         return [user_prompt]
 
-    def _requested_g1_gestures(self, transcription: str) -> list:
-        """Return the allow-listed G1 gestures an explicit spoken request names.
+    def _physical_request(self, transcription: str):
+        """What an explicit spoken request asks the robot to do, or None.
 
         Physical intents must not depend on a best-effort LLM classification.
-        Whisper supplies the text; this small, auditable gate accepts only
-        gestures the G1 client will later validate independently. Gestures
-        joined by a sequencing word ("and then") come back in the order the
-        person said them, at most MAX_ACTIONS_PER_REQUEST of them; anything
-        else is one gesture. An empty list means this is not a request.
+        The keyword gate stays the authority on whether this is a request at
+        all: it needs a request marker. A plain request for one gesture is then
+        answered without any model call. A request that names several, or
+        strings steps together, goes to the planner, whose answer is validated
+        before it is believed. Returns a PlannedQueue, an UnsupportedRequest
+        (do nothing, say what is not possible) or None (not a physical request).
         """
         text = transcription.lower()
         if not _has_request_marker(text):
-            return []
-        return _gestures_requested_in(text)[:MAX_ACTIONS_PER_REQUEST]
+            return None
+        mentioned = _gestures_mentioned(text)
+        if len(mentioned) < 2 and not _SEQUENCING_WORD.search(text):
+            return PlannedQueue(tuple(mentioned)) if mentioned else None
+        return self._planned_or_single(transcription, mentioned)
+
+    def _planned_or_single(self, transcription: str, mentioned: list):
+        outcome = plan_robot_steps(transcription, self._ask_planner_model)
+        if isinstance(outcome, PlannedQueue):
+            turn_log.step("plan", f"{list(outcome.states)}")
+            return outcome
+        if isinstance(outcome, UnsupportedRequest):
+            turn_log.step("plan", f"unsupported steps {list(outcome.steps)}; performing nothing")
+            return outcome
+        if not mentioned:
+            turn_log.step("plan", f"could not plan ({outcome.reason}); not a gesture request")
+            return None
+        turn_log.step("plan", f"could not plan ({outcome.reason}); doing {mentioned[0]} only")
+        return PlannedQueue((mentioned[0],))
 
     def _uncertain_g1_gesture(self, transcription: str) -> Optional[str]:
         """Return a confirmation-only gesture candidate, never an action."""
@@ -274,18 +262,35 @@ class _Reasoner:
     def _route_requested_gesture(self, person_details: PersonDetails,
                                  transcription: str,
                                  user_prompt: list) -> Optional[PersonDetails]:
-        gestures = self._requested_g1_gestures(transcription)
-        if not gestures:
+        request = self._physical_request(transcription)
+        if request is None:
             return None
-        if len(gestures) > 1:
+        if isinstance(request, UnsupportedRequest):
+            return self._route_unsupported_request(
+                person_details, request, transcription, user_prompt
+            )
+        if len(request.states) > 1:
             return self._route_gesture_sequence(
-                person_details, gestures, transcription, user_prompt
+                person_details, list(request.states), transcription, user_prompt
             )
         return self._route(
             person_details,
-            gestures[0],
+            request.states[0],
             user_prompt,
-            f"[g1_action] transcription={transcription!r} route={gestures[0]}",
+            f"[g1_action] transcription={transcription!r} route={request.states[0]}",
+        )
+
+    def _route_unsupported_request(self, person_details: PersonDetails,
+                                   request: UnsupportedRequest,
+                                   transcription: str,
+                                   user_prompt: list) -> PersonDetails:
+        person_details.set_attribute(UNSUPPORTED_STEPS_ATTRIBUTE, list(request.steps))
+        return self._route(
+            person_details,
+            UNSUPPORTED_ACTION_STATE,
+            user_prompt,
+            f"[g1_action] transcription={transcription!r} "
+            f"route={UNSUPPORTED_ACTION_STATE} steps={list(request.steps)}",
         )
 
     def _route_gesture_sequence(self, person_details: PersonDetails,

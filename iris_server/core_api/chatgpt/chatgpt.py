@@ -17,6 +17,11 @@ MAX_RETRIES = 1
 # Vision and o1 requests keep their own models.
 DEFAULT_CHAT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
+# The model that turns a spoken request for several gestures into an ordered
+# queue. Set IRIS_PLANNER_MODEL to use a different (smaller) one; unset or
+# empty, it follows OPENAI_MODEL. It must support strict JSON schema output.
+DEFAULT_PLANNER_MODEL = os.environ.get("IRIS_PLANNER_MODEL") or DEFAULT_CHAT_MODEL
+
 
 class _OpenAIHandler(_VisionRequestMixin):
     vision_model = "gpt-4o"
@@ -75,6 +80,26 @@ class _OpenAIHandler(_VisionRequestMixin):
             max_tokens=max_tokens,
             stream=stream
         )
+
+    def send_structured(self, messages: list[dict], response_format: dict,
+                        max_tokens: int, timeout: float,
+                        model=DEFAULT_PLANNER_MODEL) -> str:
+        """One deterministic request whose reply must follow a JSON schema.
+
+        No retry: the caller has a fallback, and a retry would only make the
+        person wait longer for it. Returns the reply's text.
+
+        :param response_format: an OpenAI `json_schema` response format
+        :param timeout: seconds before the request is abandoned
+        """
+        response = self.client.with_options(timeout=timeout, max_retries=0).chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=0,
+            response_format=response_format,
+        )
+        return response.choices[0].message.content
 
     def img_text_response(self, image, text, max_tokens=1000, system_prompt=None):
         """
