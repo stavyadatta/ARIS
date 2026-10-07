@@ -52,10 +52,10 @@ _GESTURE_REQUEST_MARKERS = (
     "give me", "do a", "do an",
 )
 
-# The phrases that name each gesture the gate may start. The first mention of
-# any of a gesture's phrases fixes its place in a sequence, so a request is
-# performed in the order it was spoken. "dj" is matched as a whole word so it
-# cannot fire from inside another word.
+# The phrases that name each gesture the gate may start, listed in priority
+# order: when a request does not chain gestures, the first one listed that it
+# mentions is the single gesture performed. "dj" is matched as a whole word so
+# it cannot fire from inside another word.
 _G1_GESTURE_PHRASES = (
     ("g1 high five", r"high five|high-five"),
     ("g1 handshake", r"handshake|shake my hand|shake hands"),
@@ -66,6 +66,14 @@ _G1_GESTURE_PHRASES = (
 )
 _G1_GESTURE_PATTERNS = tuple(
     (state, re.compile(phrases)) for state, phrases in _G1_GESTURE_PHRASES
+)
+
+# A second gesture is only chained after the first when one of these sits
+# between the two mentions. Two gesture words alone are not a sequence --
+# "dance like a DJ" and "do the wave dance" each ask for one gesture, and every
+# extra gesture is a physical event, the dances being whole-body routines.
+_SEQUENCING_WORD = re.compile(
+    r"\b(?:and then|after that|afterwards|followed by|then|and|next)\b"
 )
 
 _CONFIRMATION_REPLIES = frozenset({
@@ -112,14 +120,48 @@ def _has_request_marker(text: str) -> bool:
     return any(marker in text for marker in _GESTURE_REQUEST_MARKERS)
 
 
-def _gestures_in_spoken_order(text: str) -> list:
-    """Each gesture named in `text`, once, ordered by where it is first named."""
-    first_mention = {}
+def _first_mention_of_each_gesture(text: str) -> dict:
+    """Each gesture named in `text` and where it is first named, in priority order."""
+    mentions = {}
     for state, pattern in _G1_GESTURE_PATTERNS:
         match = pattern.search(text)
         if match:
-            first_mention[state] = match.start()
-    return sorted(first_mention, key=first_mention.get)
+            mentions[state] = match
+    return mentions
+
+
+def _is_sequenced(text: str, earlier: re.Match, later: re.Match) -> bool:
+    return _SEQUENCING_WORD.search(text, earlier.end(), later.start()) is not None
+
+
+def _gestures_chained_in_spoken_order(text: str, mentions: dict) -> list:
+    """The gestures the person strung together, in the order they said them.
+
+    The chain starts at the first mention and ends at the first pair of
+    consecutive mentions with no sequencing word between them.
+    """
+    by_position = sorted(mentions.items(), key=lambda item: item[1].start())
+    chain = [by_position[0]]
+    for state, match in by_position[1:]:
+        if not _is_sequenced(text, chain[-1][1], match):
+            break
+        chain.append((state, match))
+    return [state for state, _ in chain]
+
+
+def _gestures_requested_in(text: str) -> list:
+    """What `text` asks the robot to do: a chain of gestures, or else one.
+
+    Without a sequencing word the request is a single gesture, picked by
+    priority exactly as before gestures could be chained.
+    """
+    mentions = _first_mention_of_each_gesture(text)
+    if not mentions:
+        return []
+    chain = _gestures_chained_in_spoken_order(text, mentions)
+    if len(chain) > 1:
+        return chain
+    return [next(iter(mentions))]
 
 
 class _Reasoner:
@@ -156,15 +198,15 @@ class _Reasoner:
 
         Physical intents must not depend on a best-effort LLM classification.
         Whisper supplies the text; this small, auditable gate accepts only
-        gestures the G1 client will later validate independently. They come
-        back in the order the person said them, at most
-        MAX_ACTIONS_PER_REQUEST of them, or an empty list when this is not a
-        request.
+        gestures the G1 client will later validate independently. Gestures
+        joined by a sequencing word ("and then") come back in the order the
+        person said them, at most MAX_ACTIONS_PER_REQUEST of them; anything
+        else is one gesture. An empty list means this is not a request.
         """
         text = transcription.lower()
         if not _has_request_marker(text):
             return []
-        return _gestures_in_spoken_order(text)[:MAX_ACTIONS_PER_REQUEST]
+        return _gestures_requested_in(text)[:MAX_ACTIONS_PER_REQUEST]
 
     def _uncertain_g1_gesture(self, transcription: str) -> Optional[str]:
         """Return a confirmation-only gesture candidate, never an action."""
