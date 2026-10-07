@@ -497,8 +497,11 @@ check.equal("one chunk", len(declined), 1)
 check.equal("speaks the G1 contract", declined[0].mode, "g1_action")
 declined_payload = json.loads(declined[0].textchunk)
 check.equal("no body action", declined_payload["action"], "none")
+# The decline is one of several replies chosen at random, each offering a
+# different gesture, so the check is that it is one of them, not one wording.
+from apis.unsupported_action import UNSUPPORTED_ACTION_REPLIES
 check.equal("offers what it can do",
-            "high five" in declined_payload["reply"], True)
+            declined_payload["reply"] in UNSUPPORTED_ACTION_REPLIES, True)
 
 check.equal("Pepper movement package is gone",
             importlib.util.find_spec("apis.movement"), None)
