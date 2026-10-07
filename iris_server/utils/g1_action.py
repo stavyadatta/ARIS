@@ -34,9 +34,10 @@ MIN_ACTIONS_FOR_SEQUENCE = 2
 G1_SEQUENCE_STATE = "g1 sequence"
 G1_SEQUENCE_ATTRIBUTE = "g1_sequence"
 
-# A request with a step the robot cannot do is routed here instead, carrying the
-# person's words for each such step, so nothing at all is performed and the
-# reply says what is not possible.
+# A request with a step the robot cannot do is routed here instead, so nothing at
+# all is performed and the reply says what is not possible. The model's wording
+# of each such step travels in the attribute for the log and the person's record
+# only; it is never spoken, because it is unsanitised model text.
 UNSUPPORTED_ACTION_STATE = "g1 unsupported action"
 UNSUPPORTED_STEPS_ATTRIBUTE = "unsupported_steps"
 

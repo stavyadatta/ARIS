@@ -6,6 +6,7 @@ drop it on the way to the client. Needs no database: the Neo4j client is stubbed
 """
 
 import json
+import re
 from collections import deque
 
 from harness import (
@@ -38,7 +39,7 @@ from apis import api_call
 from apis.g1_gesture import G1_GESTURES
 from executor.executor import find_best_match
 from media_manager.grpc_handle import MediaManager
-from apis.unsupported_action import UNSUPPORTED_ACTION_REPLIES, spoken_refusal_naming
+from apis.unsupported_action import OFFERED_GESTURES, UNSUPPORTED_ACTION_REPLY
 from reasoner.action_planner import (
     CouldNotPlan,
     NoStepsRequested,
@@ -360,21 +361,45 @@ check.equal("it carries the person's steps",
 declined_chunks = list(api_call[UNSUPPORTED_ACTION_STATE](chores))
 declined = json.loads(declined_chunks[0].textchunk)
 check.equal("no body action at all", (declined["action"], "actions" in declined), ("none", False))
-check.equal("it names what it cannot do",
-            "go over there, pick up the towel, clean the table and more" in declined["reply"], True)
-check.equal("it says nothing was started", "will not start any of it" in declined["reply"], True)
-check.equal("it offers something it can do",
-            any(offer in declined["reply"] for offer in
-                ("wave", "dance", "shake hands", "throw money")), True)
 check.equal("speaks the G1 contract", declined_chunks[0].mode, "g1_action")
-check.equal("a single unsupported step reads naturally",
-            spoken_refusal_naming(["sit"]).startswith("I cannot sit yet,"), True)
-check.equal("two read naturally",
-            spoken_refusal_naming(["sit", "stand"]).startswith("I cannot sit and stand yet,"), True)
+check.equal("the reply is the one fixed wording", declined["reply"], UNSUPPORTED_ACTION_REPLY)
+
+check.section("the refusal wording")
+check.equal("it says it is a safety matter and not configured yet",
+            "Due to safety, those actions have not been configured for me yet." in UNSUPPORTED_ACTION_REPLY,
+            True)
+check.equal("it offers the list in a natural spoken form",
+            UNSUPPORTED_ACTION_REPLY.endswith(
+                "What I can do now is wave, shake hands, give a high five, dance, DJ or throw money."),
+            True)
+spoken_words = set(re.findall(r"[a-z']+", declined["reply"].lower()))
+persons_words = {word for step in chores.get_attribute(UNSUPPORTED_STEPS_ATTRIBUTE)
+                 for word in re.findall(r"[a-z']+", step.lower())}
+check.equal("none of the person's words are spoken", spoken_words & persons_words, set())
+check.equal("not the sentence the person said either",
+            owner_chores.lower() in declined["reply"].lower(), False)
 generic = json.loads(list(api_call[UNSUPPORTED_ACTION_STATE](
     PersonDetails({"state": "custom movement"})))[0].textchunk)
-check.equal("without recorded steps it declines generally, as before",
-            generic["reply"] in UNSUPPORTED_ACTION_REPLIES, True)
+check.equal("the planner path and the classifier path say identical words",
+            generic["reply"], declined["reply"])
+other_steps = PersonDetails({"state": UNSUPPORTED_ACTION_STATE,
+                             UNSUPPORTED_STEPS_ATTRIBUTE: ["sit"]})
+check.equal("whatever the steps are, the words do not change",
+            json.loads(list(api_call[UNSUPPORTED_ACTION_STATE](other_steps))[0].textchunk)["reply"],
+            declined["reply"])
+
+check.section("the offered gestures are real, allow-listed ones")
+allow_listed_actions = {gesture["action"] for gesture in G1_GESTURES.values()}
+check.equal("every offered action is a G1 gesture action",
+            all(action in allow_listed_actions for action, _ in OFFERED_GESTURES), True)
+check.equal("every offered phrase is spoken in the reply",
+            all(phrase in UNSUPPORTED_ACTION_REPLY for _, phrase in OFFERED_GESTURES), True)
+check.equal("nothing is offered twice",
+            len({action for action, _ in OFFERED_GESTURES}), len(OFFERED_GESTURES))
+never_offered = {G1_GESTURES[state]["action"] for state in
+                 ("g1 hug", "g1 hand on heart", "g1 blow kiss left", "g1 blow kiss right")}
+check.equal("a hug, hand on heart and the blow kisses are never offered",
+            never_offered & {action for action, _ in OFFERED_GESTURES}, set())
 
 check.section("gesture api: an unsound sequence is refused, never trimmed")
 for label, states in [("not a list", "g1 wave"),
