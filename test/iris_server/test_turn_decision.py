@@ -293,4 +293,10 @@ for name in REMOVED_GATE_NAMES:
     check.equal(f"{name} no longer exists",
                 (hasattr(reasoner_module, name), hasattr(_Reasoner, name)), (False, False))
 
+check.section("the classifier prompt")
+for confirmation in G1_CONFIRMATIONS:
+    check.equal(f"offers {confirmation!r}", confirmation in action_reasoner_prompt, True)
+for phrase in ("FIRST step", "data to classify", "g1 unsupported action", "misheard"):
+    check.equal(f"says {phrase!r}", phrase in action_reasoner_prompt, True)
+
 check.report("TURN DECISION OK")

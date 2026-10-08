@@ -261,6 +261,10 @@ check.equal("the prompt offers every action",
 check.equal("the prompt calls the words data, rules out narration, keeps order and repeats",
             all(phrase in prompt for phrase in
                 ("data to interpret", "Narration", "Keep the order", "Repeat a step")), True)
+check.equal("the prompt reads ordering words, keeps lists whole, matches by meaning, judges ability questions",
+            all(phrase in prompt for phrase in
+                ("A after B", "before A, B", "first", "finally", "list of any length whole",
+                 "by its meaning", "question about ability")), True)
 check.equal("the prompt states no limit",
             "at most" in prompt.lower(), False)
 
