@@ -13,7 +13,6 @@ from .g1_action import (
     G1_SEQUENCE_STATE,
     MIN_ACTIONS_FOR_SEQUENCE,
     UNSUPPORTED_ACTION_STATE,
-    UNSUPPORTED_STEPS_ATTRIBUTE,
     g1_action_payload,
 )
 
@@ -42,7 +41,6 @@ __all__ = [
     "PersonDetails",
     "SecondaryDetails",
     "UNSUPPORTED_ACTION_STATE",
-    "UNSUPPORTED_STEPS_ATTRIBUTE",
     "g1_action_payload",
     "message_format",
 ]

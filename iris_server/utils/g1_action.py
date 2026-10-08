@@ -36,10 +36,9 @@ G1_SEQUENCE_ATTRIBUTE = "g1_sequence"
 
 # A request with a step the robot cannot do is routed here instead, so nothing at
 # all is performed and the reply says what is not possible. The model's wording
-# of each such step travels in the attribute for the log and the person's record
-# only; it is never spoken, because it is unsanitised model text.
+# of each such step is only logged, never spoken or stored, because it is
+# unsanitised model text.
 UNSUPPORTED_ACTION_STATE = "g1 unsupported action"
-UNSUPPORTED_STEPS_ATTRIBUTE = "unsupported_steps"
 
 
 def g1_action_payload(reply: str, action: str, speech: str = None,

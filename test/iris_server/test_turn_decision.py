@@ -33,7 +33,6 @@ from utils import (
     G1_SEQUENCE_STATE,
     PersonDetails,
     UNSUPPORTED_ACTION_STATE,
-    UNSUPPORTED_STEPS_ATTRIBUTE,
 )
 
 WAVE, CLAP, DANCE, HANDSHAKE = "g1 wave", "g1 clap", "g1 waist drum dance", "g1 handshake"
@@ -208,8 +207,6 @@ check.equal("one planned gesture is that gesture",
 planner.answers_unsupported("sit")
 refused = turn("please sit", WAVE)
 check.equal("unsupported: state", refused.get_attribute("state"), UNSUPPORTED_ACTION_STATE)
-check.equal("unsupported: the steps are kept for the log",
-            refused.get_attribute(UNSUPPORTED_STEPS_ATTRIBUTE), ["sit"])
 
 planner.answers()
 check.equal("vetoed: plain conversation",

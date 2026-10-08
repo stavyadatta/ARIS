@@ -57,7 +57,6 @@ from utils import (
     G1_SEQUENCE_STATE,
     PersonDetails,
     UNSUPPORTED_ACTION_STATE,
-    UNSUPPORTED_STEPS_ATTRIBUTE,
     g1_action_payload,
 )
 
@@ -342,9 +341,6 @@ check.equal("routed to the unsupported-action state",
 check.equal("the executor reaches the unsupported-action api",
             api_call[find_best_match(UNSUPPORTED_ACTION_STATE, api_call.keys())] is
             api_call[UNSUPPORTED_ACTION_STATE], True)
-check.equal("it carries the person's steps",
-            chores.get_attribute(UNSUPPORTED_STEPS_ATTRIBUTE),
-            ["go over there", "pick up the towel", "clean the table", "sit"])
 declined_chunks = list(api_call[UNSUPPORTED_ACTION_STATE](chores))
 declined = json.loads(declined_chunks[0].textchunk)
 check.equal("no body action at all", (declined["action"], "actions" in declined), ("none", False))
@@ -360,7 +356,7 @@ check.equal("it offers the list in a natural spoken form",
                 "What I can do now is wave, shake hands, give a high five, dance, DJ or throw money."),
             True)
 spoken_words = set(re.findall(r"[a-z']+", declined["reply"].lower()))
-persons_words = {word for step in chores.get_attribute(UNSUPPORTED_STEPS_ATTRIBUTE)
+persons_words = {word for step in ("go over there", "pick up the towel", "clean the table", "sit")
                  for word in re.findall(r"[a-z']+", step.lower())}
 check.equal("none of the person's words are spoken", spoken_words & persons_words, set())
 check.equal("not the sentence the person said either",
@@ -369,11 +365,6 @@ generic = json.loads(list(api_call[UNSUPPORTED_ACTION_STATE](
     PersonDetails({"state": "custom movement"})))[0].textchunk)
 check.equal("the planner path and the classifier path say identical words",
             generic["reply"], declined["reply"])
-other_steps = PersonDetails({"state": UNSUPPORTED_ACTION_STATE,
-                             UNSUPPORTED_STEPS_ATTRIBUTE: ["sit"]})
-check.equal("whatever the steps are, the words do not change",
-            json.loads(list(api_call[UNSUPPORTED_ACTION_STATE](other_steps))[0].textchunk)["reply"],
-            declined["reply"])
 
 check.section("the offered gestures are real, allow-listed ones")
 allow_listed_actions = {gesture["action"] for gesture in G1_GESTURES.values()}

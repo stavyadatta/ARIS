@@ -6,7 +6,6 @@ from utils import (
     G1_SEQUENCE_ATTRIBUTE,
     G1_SEQUENCE_STATE,
     UNSUPPORTED_ACTION_STATE,
-    UNSUPPORTED_STEPS_ATTRIBUTE,
     Neo4j,
     PersonDetails,
     message_format,
@@ -152,7 +151,6 @@ class _Reasoner:
     def _route_unsupported_request(self, person_details: PersonDetails,
                                    steps: tuple, transcription: str,
                                    user_prompt: list) -> PersonDetails:
-        person_details.set_attribute(UNSUPPORTED_STEPS_ATTRIBUTE, list(steps))
         return self._route(
             person_details,
             UNSUPPORTED_ACTION_STATE,
