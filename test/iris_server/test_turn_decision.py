@@ -151,6 +151,7 @@ vetoed = decide(WAVE)
 check.equal("routed to plain conversation", (vetoed.state, vetoed.gestures), (STATE_SPEAK, ()))
 check.equal("the veto is recorded", vetoed.vetoed_by_planner, True)
 check.equal("the planner outcome is the typed one", type(vetoed.planner_outcome), NoStepsRequested)
+check.equal("a veto is not a planner failure", vetoed.planner_failed, False)
 
 check.section("the planner failed: the classifier's own state stands")
 for label, arrange in [
@@ -165,6 +166,7 @@ for label, arrange in [
         check.equal(f"{label}: keeps {classifier_state!r}",
                     (kept.state, kept.gestures, kept.unsupported_steps, kept.vetoed_by_planner),
                     (classifier_state, (), (), False))
+        check.equal(f"{label}: recorded as a planner failure", kept.planner_failed, True)
 
 check.section("a non-physical answer: the planner is never asked")
 planner.answers("wave")

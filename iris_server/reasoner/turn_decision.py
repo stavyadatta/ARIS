@@ -19,6 +19,7 @@ import turn_log
 from turn_timing import span
 from utils import G1_SEQUENCE_STATE, UNSUPPORTED_ACTION_STATE
 from .action_planner import (
+    CouldNotPlan,
     ModelCall,
     NoStepsRequested,
     PlannedQueue,
@@ -69,6 +70,12 @@ class TurnDecision:
     def vetoed_by_planner(self) -> bool:
         """The classifier flagged a request and the planner found none in it."""
         return isinstance(self.planner_outcome, NoStepsRequested)
+
+    @property
+    def planner_failed(self) -> bool:
+        """The planner's model call failed or answered badly (not a deliberate "no steps")."""
+        return (isinstance(self.planner_outcome, CouldNotPlan)
+                and not self.vetoed_by_planner)
 
 
 def is_physical_state(state: str) -> bool:
