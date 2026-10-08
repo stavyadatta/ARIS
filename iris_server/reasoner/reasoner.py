@@ -1,5 +1,4 @@
 import traceback
-import random
 import re
 from typing import Optional
 
@@ -15,17 +14,18 @@ from utils import (
 from core_api import Llama, ChatGPT, Grok
 import turn_log
 from turn_timing import mark, span
-from .action_planner import (
-    NoStepsRequested,
-    PlannedQueue,
-    UnsupportedRequest,
-    model_call_through,
-    plan_robot_steps,
-)
+from .action_planner import model_call_through
+from .classifier_call import default_classifier_call
 from .prompt import action_reasoner_prompt
+from .turn_decision import (
+    CONFIRM_STATE_PREFIX,
+    G1_STATE_PREFIX,
+    STATE_SPEAK,
+    TurnDecision,
+    decide_turn,
+)
 
 STATE_NO_FACE = "no face"
-STATE_SPEAK = "speak"
 STATE_THANKS = "thanks"
 STATE_BAD_INPUT = "speak"
 NO_CHANGE_RESPONSES = ("no change", "no change.")
@@ -38,70 +38,22 @@ NO_CHANGE_RESPONSES = ("no change", "no change.")
 # which yields nothing so the handler speaks a listening fallback instead.
 KEEP_CURRENT_STATE_RESPONSES = ("no change",)
 
-G1_STATE_PREFIX = "g1 "
-CONFIRM_STATE_PREFIX = "g1 confirm "
-
-# The reasoner LLM classifies intent into a *family* of gestures ("g1
-# greeting", "g1 farewell") rather than one specific action, so the family
-# can be resolved to one of its concrete states by weighted probability
-# instead of always picking the same gesture. Equal weights today; skew
-# them (or add more entries) without touching the resolution logic.
-_GREETING_GESTURE_WEIGHTS = {"g1 wave": 0.5, "g1 handshake": 0.5}
-_FAREWELL_GESTURE_WEIGHTS = {"g1 blow kiss left": 0.5, "g1 blow kiss right": 0.5}
-_GESTURE_FAMILY_WEIGHTS = {
-    "g1 greeting": _GREETING_GESTURE_WEIGHTS,
-    "g1 farewell": _FAREWELL_GESTURE_WEIGHTS,
-}
-
-# A gesture is only ever read as a request when one of these appears, so
-# narration ("then she waved goodbye") cannot move the robot.
-_GESTURE_REQUEST_MARKERS = (
-    "please", "can you", "could you", "would you", "will you",
-    "give me", "do a", "do an",
-)
-
-# The phrases that name each gesture the gate may start. A request naming one
-# is shown to the planner; the order matters only when the planner fails, and
-# then the first one listed is the single gesture performed. "dj" is matched as
-# a whole word so it cannot fire from inside another word.
-_G1_GESTURE_PHRASES = (
-    ("g1 high five", r"high five|high-five"),
-    ("g1 handshake", r"handshake|shake my hand|shake hands"),
-    ("g1 wave", r"wave"),
-    ("g1 waist drum dance", r"dance"),
-    ("g1 spin discs", r"(?<![a-z])dj(?![a-z])|spin disc|play records"),
-    ("g1 throw money", r"throw money|throw cash|make it rain"),
-)
-_G1_GESTURE_PATTERNS = tuple(
-    (state, re.compile(phrases)) for state, phrases in _G1_GESTURE_PHRASES
-)
-
+# The whole vocabulary that answers an outstanding "did you mean?" question.
+# It decides nothing about what the person wants: the question was asked by the
+# classifier, and "yes" only accepts it.
 _CONFIRMATION_REPLIES = frozenset({
     "yes", "yes please", "yeah", "yep", "correct", "do it", "please do",
 })
-
-# What Whisper actually returns when someone asks G1 for a wave in a noisy
-# room. An explicit list, because a similarity threshold loose enough to
-# catch "wait" also catches "have", "gave" and "save" — so ordinary
-# sentences ("can you have a look at this") asked the robot to wave.
-# Only ever raises a confirmation question; it can never move the robot.
-_WAVE_MISHEARINGS = frozenset({
-    "wait", "waits", "waive", "waives", "weave", "wade", "wav", "waved",
-})
-
-
-def _weighted_choice(options: dict) -> str:
-    """Pick one key from options, weighted by its probability value."""
-    return random.choices(list(options.keys()), weights=list(options.values()), k=1)[0]
 
 
 def _words_in(text: str) -> list:
     return re.findall(r"[a-z]+", text.lower())
 
 
-# A turn made only of these is a courtesy. The robot's own name may be tacked on
-# ("thanks Iris"); anything else ("thanks for the dance, now wave") is a real
-# request and goes through the normal gates and classifier.
+# A turn made only of these is a courtesy shortcut, not a physical gate: it
+# saves a model call on a plain thank-you. The robot's own name may be tacked on
+# ("thanks Iris"); anything else ("thanks for the dance, now wave") goes to the
+# classifier.
 _THANKS_PHRASES = frozenset({
     "thank you", "thanks", "thank you very much", "thank you so much",
     "thanks a lot", "thanks so much", "many thanks", "thank you kindly",
@@ -116,24 +68,19 @@ def _is_pure_thanks(transcription: str) -> bool:
     return phrase in _THANKS_PHRASES
 
 
-def _has_request_marker(text: str) -> bool:
-    return any(marker in text for marker in _GESTURE_REQUEST_MARKERS)
-
-
-def _gestures_mentioned(text: str) -> list:
-    """Each gesture `text` names, once, in priority order."""
-    return [state for state, pattern in _G1_GESTURE_PATTERNS if pattern.search(text)]
-
-
 class _Reasoner:
-    def __init__(self, ask_planner_model=None):
+    def __init__(self, ask_planner_model=None, ask_classifier_model=None):
         """
             Initializing the reasoner
             :param ask_planner_model: the model call that plans a queue of
                 gestures (see action_planner.ModelCall); ChatGPT by default.
-                Injected so tests never reach a network.
+            :param ask_classifier_model: the model call that classifies each
+                turn (see classifier_call.ClassifierCall); ChatGPT, with Grok
+                as the fallback, by default.
+                Both are injected so tests never reach a network.
         """
         self._ask_planner_model = ask_planner_model or model_call_through(ChatGPT)
+        self._ask_classifier_model = ask_classifier_model or default_classifier_call(ChatGPT, Grok)
 
     def to_lowercase(self, input_string):
         """
@@ -155,65 +102,6 @@ class _Reasoner:
     def _developing_user_prompt(self, text: str):
         user_prompt = message_format("user", text)
         return [user_prompt]
-
-    def _physical_request(self, transcription: str):
-        """What an explicit spoken request asks the robot to do, or None.
-
-        Physical intents must not depend on a best-effort LLM classification,
-        so two keyword checks gate the model: the sentence needs a request
-        marker AND must name at least one gesture. Only then is the planner
-        asked, always, even for one gesture, so a step the robot cannot do
-        ("wave and then walk to the door") is caught instead of silently
-        dropped. No word list decides whether something is a sequence: that is
-        the planner's job. The planner's answer is validated before it is
-        believed. Returns a PlannedQueue, an UnsupportedRequest (do nothing,
-        say what is not possible) or None (not a physical request, so the
-        normal classifier handles the sentence).
-        """
-        text = transcription.lower()
-        if not _has_request_marker(text):
-            return None
-        mentioned = _gestures_mentioned(text)
-        if not mentioned:
-            return None
-        return self._planned_or_single(transcription, mentioned)
-
-    def _planned_or_single(self, transcription: str, mentioned: list):
-        """The planner's validated answer; the first-priority gesture if it fails.
-
-        `mentioned` is never empty here. An answer of "no steps" is the planner
-        saying the gesture word was only narration, which must not move the
-        robot, so it is not a failure and takes no fallback.
-        """
-        outcome = plan_robot_steps(transcription, self._ask_planner_model)
-        if isinstance(outcome, PlannedQueue):
-            turn_log.step("plan", f"{list(outcome.states)}")
-            return outcome
-        if isinstance(outcome, UnsupportedRequest):
-            turn_log.step("plan", f"unsupported steps {list(outcome.steps)}; performing nothing")
-            return outcome
-        if isinstance(outcome, NoStepsRequested):
-            turn_log.step("plan", "no physical step requested; not a gesture request")
-            return None
-        turn_log.step("plan", f"could not plan ({outcome.reason}); doing {mentioned[0]} only")
-        return PlannedQueue((mentioned[0],))
-
-    def _uncertain_g1_gesture(self, transcription: str) -> Optional[str]:
-        """Return a confirmation-only gesture candidate, never an action."""
-        text = transcription.lower()
-        if not _has_request_marker(text):
-            return None
-        words = _words_in(text)
-        if self._sounds_like_wave(words):
-            return "g1 wave"
-        if "shake" in words:
-            return "g1 handshake"
-        if "five" in words and any(word in {"hi", "high"} for word in words):
-            return "g1 high five"
-        return None
-
-    def _sounds_like_wave(self, words: list) -> bool:
-        return any(word in _WAVE_MISHEARINGS for word in words)
 
     def _confirmed_g1_gesture(self, transcription: str) -> bool:
         """Accept only a small explicit confirmation vocabulary."""
@@ -261,38 +149,16 @@ class _Reasoner:
         person_details.set_attribute("state", STATE_SPEAK)
         return None
 
-    def _route_requested_gesture(self, person_details: PersonDetails,
-                                 transcription: str,
-                                 user_prompt: list) -> Optional[PersonDetails]:
-        request = self._physical_request(transcription)
-        if request is None:
-            return None
-        if isinstance(request, UnsupportedRequest):
-            return self._route_unsupported_request(
-                person_details, request, transcription, user_prompt
-            )
-        if len(request.states) > 1:
-            return self._route_gesture_sequence(
-                person_details, list(request.states), transcription, user_prompt
-            )
-        return self._route(
-            person_details,
-            request.states[0],
-            user_prompt,
-            f"[g1_action] transcription={transcription!r} route={request.states[0]}",
-        )
-
     def _route_unsupported_request(self, person_details: PersonDetails,
-                                   request: UnsupportedRequest,
-                                   transcription: str,
+                                   steps: tuple, transcription: str,
                                    user_prompt: list) -> PersonDetails:
-        person_details.set_attribute(UNSUPPORTED_STEPS_ATTRIBUTE, list(request.steps))
+        person_details.set_attribute(UNSUPPORTED_STEPS_ATTRIBUTE, list(steps))
         return self._route(
             person_details,
             UNSUPPORTED_ACTION_STATE,
             user_prompt,
             f"[g1_action] transcription={transcription!r} "
-            f"route={UNSUPPORTED_ACTION_STATE} steps={list(request.steps)}",
+            f"route={UNSUPPORTED_ACTION_STATE} steps={list(steps)}",
         )
 
     def _route_gesture_sequence(self, person_details: PersonDetails,
@@ -307,20 +173,6 @@ class _Reasoner:
             f"route={G1_SEQUENCE_STATE} gestures={gestures}",
         )
 
-    def _route_uncertain_gesture(self, person_details: PersonDetails,
-                                 transcription: str,
-                                 user_prompt: list) -> Optional[PersonDetails]:
-        gesture = self._uncertain_g1_gesture(transcription)
-        if gesture is None:
-            return None
-        return self._route(
-            person_details,
-            CONFIRM_STATE_PREFIX + gesture.removeprefix(G1_STATE_PREFIX),
-            user_prompt,
-            f"[g1_action] transcription={transcription!r} "
-            f"confirmation_needed={gesture}",
-        )
-
     def _route_thanks(self, person_details: PersonDetails, transcription: str,
                       user_prompt: list) -> Optional[PersonDetails]:
         if not _is_pure_thanks(transcription):
@@ -330,37 +182,35 @@ class _Reasoner:
 
     def _routed_by_gates(self, person_details: PersonDetails, transcription: str,
                          user_prompt: list) -> Optional[PersonDetails]:
-        """Try each deterministic gate in priority order, cheapest intent first."""
-        for route in (self._answer_pending_confirmation,
-                      self._route_requested_gesture,
-                      self._route_uncertain_gesture,
-                      self._route_thanks):
+        """Answer the two turns that need no model: a reply to an open question
+        and a pure thank-you. Neither decides whether something is a request
+        for the robot's body; the classifier does that."""
+        for route in (self._answer_pending_confirmation, self._route_thanks):
             routed = route(person_details, transcription, user_prompt)
             if routed is not None:
                 return routed
         return None
 
-    def _classify_with_llm(self, total_prompt: list) -> str:
-        try:
-            with span("reasoner.classify_llm"):
-                response = ChatGPT.send_text(total_prompt, stream=False)
-            turn_log.step("classify", f"{response.model} -> {response.choices[0].message.content!r}")
-        except Exception as e:
-            print("chatgpt failed ", e)
-            with span("reasoner.classify_llm_fallback"):
-                response = Grok.send_text(total_prompt, stream=False)
-        return response.choices[0].message.content
+    def decide(self, transcription: str) -> TurnDecision:
+        """What the classifier and, for a physical request, the planner make of a sentence.
 
-    def _resolve_gesture_family(self, response_text: str) -> str:
-        gesture_family = _GESTURE_FAMILY_WEIGHTS.get(response_text)
-        if gesture_family is None:
-            return response_text
-        resolved_gesture = _weighted_choice(gesture_family)
-        print(
-            f"[g1_action] llm_category={response_text!r} "
-            f"resolved={resolved_gesture}"
-        )
-        return resolved_gesture
+        Reads and writes no person record, so the evaluation can call it.
+        """
+        total_prompt = self._developing_reasoning_prompt() + self._developing_user_prompt(transcription)
+        classifier_answer = self._ask_classifier_model(total_prompt)
+        return decide_turn(classifier_answer, transcription, self._ask_planner_model)
+
+    def _route_decision(self, person_details: PersonDetails, decision: TurnDecision,
+                        transcription: str, user_prompt: list) -> PersonDetails:
+        if decision.gestures:
+            return self._route_gesture_sequence(
+                person_details, list(decision.gestures), transcription, user_prompt
+            )
+        if decision.unsupported_steps:
+            return self._route_unsupported_request(
+                person_details, decision.unsupported_steps, transcription, user_prompt
+            )
+        return self._route_llm_state(person_details, decision.state, user_prompt)
 
     def _route_llm_state(self, person_details: PersonDetails, response_text: str,
                          user_prompt: list) -> PersonDetails:
@@ -402,11 +252,8 @@ class _Reasoner:
                 return routed
 
             mark("classifier", "llm")
-            total_prompt = self._developing_reasoning_prompt() + user_prompt
-            response_text = self._resolve_gesture_family(
-                self._classify_with_llm(total_prompt)
-            )
-            return self._route_llm_state(person_details, response_text, user_prompt)
+            decision = self.decide(transcription)
+            return self._route_decision(person_details, decision, transcription, user_prompt)
 
         except Exception as e:
             print(f"Error in reasoning section: {e}")

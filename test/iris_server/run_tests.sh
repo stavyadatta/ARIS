@@ -7,7 +7,7 @@
 # over the baked-in copy. Nothing is written to the repo.
 #
 # Usage:
-#   test/iris_server/run_tests.sh                 # both suites
+#   test/iris_server/run_tests.sh                 # all suites
 #   test/iris_server/run_tests.sh test_pipeline   # one suite
 #
 # NEO4J_PASSWORD comes from .env at the repo root; utils/__init__.py connects
@@ -18,7 +18,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMAGE="${IRIS_TEST_IMAGE:-iris-server:latest}"
-SUITES=("${@:-test_pipeline test_llm_handlers test_action_queue}")
+SUITES=("${@:-test_pipeline test_llm_handlers test_action_queue test_turn_decision}")
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "Image $IMAGE not found; falling back to ginny-server:latest" >&2

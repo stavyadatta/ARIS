@@ -1,12 +1,12 @@
 """Turn a spoken request for a series of physical steps into an ordered, validated queue.
 
-The reasoner's keyword gate decides that a sentence is a physical request; it
-cannot tell what order things were asked in, how often, which are only
-narration ("then she waved"), or which are things the robot cannot do at all
-("go over there, pick up the towel, then sit"). A small model reads the sentence
-for that, and answers in a strict JSON schema in which every step is EITHER an
-allow-listed action name OR an explicit unsupported step carrying the person's
-own words for it.
+The per-turn classifier decides that a sentence is a physical request (see
+turn_decision.py); it names one state, so it cannot tell what order things were
+asked in, how often, which are only narration ("then she waved"), or which are
+things the robot cannot do at all ("go over there, pick up the towel, then
+sit"). A small model reads the whole sentence for that, and answers in a strict
+JSON schema in which every step is EITHER an allow-listed action name OR an
+explicit unsupported step carrying the person's own words for it.
 
 The model is never trusted. Its reply is parsed and every step checked against
 the allow list again here. The outcome is one of three types:
@@ -15,12 +15,12 @@ the allow list again here. The outcome is one of three types:
   UnsupportedRequest  at least one step is not: perform NONE of it (a partial
                       queue could leave the robot mid-task) and say what is not
                       possible
-  CouldNotPlan        the reply was unusable; the caller falls back to the
-                      deterministic single-gesture pick
+  CouldNotPlan        the reply was unusable; the caller keeps the classifier's
+                      own state
   NoStepsRequested    a CouldNotPlan the model answered on purpose: the person
                       asked for no physical step (a gesture word in narration).
                       The caller must NOT fall back, or narration would move
-                      the robot
+                      the robot; the turn is plain conversation
 
 There is no limit on the number of steps. The only bound is that the whole
 reply must fit in PLANNER_MAX_TOKENS; a longer one is cut off mid-JSON and is
@@ -37,7 +37,7 @@ from apis.g1_gesture import G1_GESTURES
 # a short queue costs nothing extra. Generous because a long queue has to fit.
 PLANNER_MAX_TOKENS = 4000
 # A person is waiting for the robot to move; a slow planner is as good as a
-# failed one, because the single-gesture fallback is always available.
+# failed one, because the classifier's own state is always available.
 PLANNER_TIMEOUT_SECONDS = 8
 
 SCHEMA_NAME = "robot_step_queue"

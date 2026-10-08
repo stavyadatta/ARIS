@@ -90,41 +90,15 @@ for state in ["no face", "bad input", "speak", "g1 wave", "g1 sequence", "g1 con
 check.section("reasoner: no face short-circuit")
 
 
-def planner_is_offline(messages, schema):
-    """Every wave/handshake/high-five request now asks the planner; here it is down."""
+def model_is_offline(*arguments):
+    """The planner and the classifier are both down; these checks need neither."""
     raise ConnectionError("no network in tests")
 
 
-# With the planner down, a request that names one gesture is performed by the
-# deterministic single-gesture fallback, which is what these checks cover.
-reasoner = _Reasoner(ask_planner_model=planner_is_offline)
+reasoner = _Reasoner(ask_planner_model=model_is_offline, ask_classifier_model=model_is_offline)
 check.equal("face_id None -> no face",
             reasoner(transcription="hello iris", face_id=None).get_attribute("state"),
             "no face")
-
-check.section("reasoner: explicit gesture requests")
-def requested_states(sentence):
-    request = reasoner._physical_request(sentence)
-    return list(request.states) if request else []
-
-
-check.equal("wave", requested_states("can you wave at me"), ["g1 wave"])
-check.equal("handshake", requested_states("please shake hands"), ["g1 handshake"])
-check.equal("high five", requested_states("can you give a high five"), ["g1 high five"])
-check.equal("narration ignored", requested_states("she waved goodbye"), [])
-check.equal("no request marker ignored", requested_states("wave"), [])
-
-check.section("reasoner: mis-heard gesture requests ask before acting")
-for heard in ["wait", "waive", "weave", "wade"]:
-    check.equal(f"{heard!r} -> confirm wave",
-                reasoner._uncertain_g1_gesture(f"can you {heard}"), "g1 wave")
-# These scored 0.75 against "wave" under the old similarity threshold and
-# wrongly asked to wave. An ordinary sentence must stay ordinary.
-for innocent in ["have a look", "gave it to me", "save that", "cave", "wake me"]:
-    check.equal(f"{innocent!r} is not a wave request",
-                reasoner._uncertain_g1_gesture(f"can you {innocent}"), None)
-check.equal("shake", reasoner._uncertain_g1_gesture("please shake"), "g1 handshake")
-check.equal("unrelated request", reasoner._uncertain_g1_gesture("please tell me a joke"), None)
 
 check.section("reasoner: confirmation vocabulary")
 check.equal("yes", reasoner._confirmed_g1_gesture("yes"), True)
