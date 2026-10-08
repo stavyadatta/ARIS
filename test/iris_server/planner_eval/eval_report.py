@@ -20,20 +20,22 @@ def summary_lines(results: list, model_name) -> list:
     return [line for section in sections for line in section + [""]]
 
 
-def _percent(correct: int, total: int) -> str:
+def percent(correct: int, total: int) -> str:
+    if total == 0:
+        return f"n/a ({correct}/{total})"
     return f"{PERCENT * correct / total:.1f}% ({correct}/{total})"
 
 
 def _headline_lines(results, model_name) -> list:
     correct = eval_metrics.correct_count(results)
     lines = [f"planner model: {model_name}"] if model_name else []
-    return lines + [f"overall exact-match accuracy: {_percent(correct, len(results))}"]
+    return lines + [f"overall exact-match accuracy: {percent(correct, len(results))}"]
 
 
 def _category_lines(results) -> list:
     tally = eval_metrics.accuracy_by_category(results)
     return ["accuracy per category:"] + [
-        f"  {category:<26}{_percent(correct, total)}"
+        f"  {category:<26}{percent(correct, total)}"
         for category, (correct, total) in tally.items()
     ]
 
@@ -59,7 +61,7 @@ def _queue_error_lines(results) -> list:
 
 def _false_action_lines(results) -> list:
     wrong_ids = eval_metrics.false_action_ids(results)
-    rate = _percent(len(wrong_ids), eval_metrics.chat_case_count(results))
+    rate = percent(len(wrong_ids), eval_metrics.chat_case_count(results))
     listed = ", ".join(wrong_ids) if wrong_ids else "none"
     return [f"FALSE-ACTION rate (chat turned into queue or unsupported): {rate}",
             f"  ids: {listed}"]

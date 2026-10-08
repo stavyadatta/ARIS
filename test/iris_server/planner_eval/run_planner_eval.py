@@ -15,6 +15,7 @@ import eval_metrics
 import eval_report
 import planner_adapter
 import planner_environment
+from error_scrubbing import exit_with_scrubbed_error
 
 # Small enough to stay inside the model's rate limit, large enough that 100
 # calls of a second or two each finish in about a minute.
@@ -26,11 +27,8 @@ DEFAULT_CASES_PATH = Path(__file__).with_name("cases.json")
 DEFAULT_OUT_PATH = "/tmp/planner_eval_results.json"
 
 
-def evaluate_case(case: dict, plan, action_by_state: dict) -> dict:
-    started = time.perf_counter()
-    outcome = plan(case["sentence"])
-    seconds = time.perf_counter() - started
-    got = planner_adapter.label_of(outcome, action_by_state)
+def scored_result(case: dict, got: dict, seconds: float) -> dict:
+    """One case's outcome next to its label; shared with the end-to-end stage."""
     return {
         "id": case["id"],
         "category": case["category"],
@@ -42,15 +40,25 @@ def evaluate_case(case: dict, plan, action_by_state: dict) -> dict:
     }
 
 
+def evaluate_case(case: dict, plan, action_by_state: dict) -> dict:
+    started = time.perf_counter()
+    outcome = plan(case["sentence"])
+    seconds = time.perf_counter() - started
+    return scored_result(case, planner_adapter.label_of(outcome, action_by_state), seconds)
+
+
 def evaluate_all(cases: list, plan, action_by_state: dict) -> list:
     with ThreadPoolExecutor(max_workers=WORKER_COUNT) as pool:
         return list(pool.map(lambda case: evaluate_case(case, plan, action_by_state), cases))
 
 
-def write_results(path: str, results: list, model_name) -> None:
-    document = {"planner_model": model_name, "results": results}
+def write_json(path: str, document: dict) -> None:
     with open(path, "w", encoding="utf-8") as out_file:
         json.dump(document, out_file, indent=2, ensure_ascii=False)
+
+
+def write_results(path: str, results: list, model_name) -> None:
+    write_json(path, {"planner_model": model_name, "results": results})
 
 
 def parse_arguments():
@@ -87,4 +95,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    exit_with_scrubbed_error(main)

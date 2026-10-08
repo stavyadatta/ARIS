@@ -8,6 +8,7 @@ metrics can be checked offline.
 import importlib
 
 import planner_environment
+from error_scrubbing import scrubbed
 from eval_cases import KIND_CHAT, KIND_COULD_NOT_PLAN, KIND_QUEUE, KIND_UNSUPPORTED
 
 # The planner's own reason when a sentence asks for nothing physical.
@@ -34,10 +35,14 @@ def label_of(outcome, action_by_state: dict) -> dict:
 
 
 def real_planner():
-    """A plan function that asks the live model; costs real requests."""
+    """A plan function that asks the live model; costs real requests.
+
+    Model errors are scrubbed (see error_scrubbing.py) because the planner puts
+    the error text into its reason, which the report prints.
+    """
     planner = _planner_module()
     ask_model = planner.model_call_through(planner_environment.real_chatgpt_handler())
-    return lambda sentence: planner.plan_robot_steps(sentence, ask_model)
+    return lambda sentence: planner.plan_robot_steps(sentence, scrubbed(ask_model))
 
 
 def fake_planner(cases: list, action_by_state: dict):

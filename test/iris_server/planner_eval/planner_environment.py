@@ -47,3 +47,8 @@ def real_chatgpt_handler():
 def planner_model_name() -> str:
     """The model the handler will ask: a name only, never a credential."""
     return importlib.import_module(CHATGPT_MODULE).DEFAULT_PLANNER_MODEL
+
+
+def classifier_model_name() -> str:
+    """The model the per-turn classifier asks: a name only, never a credential."""
+    return importlib.import_module(CHATGPT_MODULE).DEFAULT_CHAT_MODEL
