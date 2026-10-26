@@ -1,0 +1,8 @@
+.git
+.env
+.omc
+database
+display_imgs
+recordings
+**/__pycache__
+**/*.pyc

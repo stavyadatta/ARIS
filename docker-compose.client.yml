@@ -1,0 +1,21 @@
+# ARIS Pepper client. Run on the machine next to the robot (amd64 or arm64):
+#
+#   cp .env.example .env               # set PEPPER_IP, ARIS_SERVER, CLIENT_LISTEN_URL
+#   docker compose -f docker-compose.client.yml up --build
+
+services:
+  client:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.client
+    image: aris-client:latest
+    container_name: aris-client
+    # Pepper streams microphone audio back to the client over qi, so the
+    # client must share the host network to be reachable from the robot.
+    network_mode: host
+    command:
+      - --ip=${PEPPER_IP:-192.168.0.52}
+      - --server=${ARIS_SERVER:-localhost:50051}
+      - --listen=${CLIENT_LISTEN_URL:-tcp://0.0.0.0:9559}
+      - --volume=${PEPPER_VOLUME:-40}
+    restart: unless-stopped

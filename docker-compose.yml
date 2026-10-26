@@ -1,0 +1,69 @@
+# ARIS server stack: Neo4j + GPU server. The Pepper client has its own
+# compose file (docker-compose.client.yml) so it can run on a separate machine.
+#
+#   cp .env.example .env               # fill in API keys / passwords
+#   docker compose up --build -d       # Neo4j + ARIS server
+#   docker compose logs -f server
+#
+# Requires nvidia-container-toolkit on the server host.
+
+services:
+  neo4j:
+    image: neo4j:5.25.1-community
+    container_name: aris-neo4j
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+    ports:
+      # Bound to localhost: the graph holds personal data. Use an SSH tunnel
+      # to browse it from another machine.
+      - "127.0.0.1:7474:7474"   # browser UI
+      - "127.0.0.1:7687:7687"   # bolt
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#neo4j/}\" 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    image: aris-server:latest
+    container_name: aris-server
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
+      - GROK_API_KEY=${GROK_API_KEY:-}
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+    ports:
+      - "50051:50051"            # gRPC (the Pepper client connects here)
+      - "127.0.0.1:8003:8003"    # live frame viewer (debug, localhost only)
+    volumes:
+      # Enrolled face embeddings (face re-identification state)
+      - ./database:/workspace/database
+      - ./display_imgs:/workspace/display_imgs
+      # Model caches: Whisper large-v3 (~3 GB), InsightFace buffalo_l
+      - whisper-cache:/root/.cache/whisper
+      - insightface-cache:/root/.insightface
+      - torch-cache:/root/.cache/torch
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  neo4j-data:
+  whisper-cache:
+  insightface-cache:
+  torch-cache:

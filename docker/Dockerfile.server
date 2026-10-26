@@ -1,0 +1,54 @@
+# ARIS server (x86_64, CUDA 11.8, Python 3.10). Requires an NVIDIA GPU and
+# nvidia-container-toolkit on the host. Build from the repository root:
+#   docker compose up --build
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    TZ=UTC
+
+# ffmpeg: Whisper audio decoding; libgl1/libglib2.0-0: OpenCV;
+# build-essential: insightface C extensions
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.10 python3.10-dev python3-pip \
+        build-essential git ffmpeg \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -sf /usr/bin/python3.10 /usr/local/bin/python \
+ && ln -sf /usr/bin/python3.10 /usr/local/bin/python3 \
+ && python -m pip install --upgrade pip setuptools wheel
+
+RUN pip install --extra-index-url https://download.pytorch.org/whl/cu118 \
+        torch==2.2.1+cu118 torchvision==0.17.1+cu118 torchaudio==2.2.1+cu118
+
+WORKDIR /workspace
+COPY server/requirements.txt /workspace/server/requirements.txt
+RUN pip install -r /workspace/server/requirements.txt
+
+COPY server             /workspace/server
+COPY grpc_communication /workspace/grpc_communication
+COPY image_viewer.py    /workspace/image_viewer.py
+
+# The server imports both `grpc_communication.grpc_pb2_grpc` and `grpc_pb2`
+ENV PYTHONPATH=/workspace:/workspace/grpc_communication \
+    FACE_DB_DIR=/workspace/database/face_db \
+    DISPLAY_IMGS_DIR=/workspace/display_imgs
+
+RUN mkdir -p /workspace/database/face_db /workspace/display_imgs
+
+WORKDIR /workspace/server
+
+# Bake the person-detector weights into the image (ultralytics downloads
+# yolov8n.pt into the working directory on first use)
+RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+
+# 50051: gRPC MediaService, 8003: live camera-frame viewer (debug)
+EXPOSE 50051 8003
+
+CMD ["python", "main.py"]

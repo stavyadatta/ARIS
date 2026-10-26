@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+
+# Secrets
+.env
+
+# Runtime state (mounted into the server container)
+database/
+display_imgs/
+recordings/
+*.log
+
+# Model weights (downloaded automatically at runtime)
+*.pt
+*.onnx
+
+# Media
+*.wav
+*.mp3
+*.mp4
+*.jpg
+*.jpeg
+*.png
+
+# Editors / OS / tooling
+.vscode/
+.idea/
+*.swp
+.DS_Store
+.omc/

@@ -1,0 +1,23 @@
+# ARIS Pepper client (Python 3.10). Builds for linux/amd64 and linux/arm64
+# (e.g. Raspberry Pi 5). Build from the repository root:
+#   docker compose -f docker-compose.client.yml up --build
+FROM python:3.10-slim-bookworm
+
+ARG TARGETARCH
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /workspace
+COPY pepper_client/requirements.txt pepper_client/qi-3.1.4-cp310-cp310-manylinux_2_35_aarch64.whl /tmp/
+RUN pip install -r /tmp/requirements.txt \
+ && if [ "$TARGETARCH" = "arm64" ]; then \
+        pip install /tmp/qi-3.1.4-cp310-cp310-manylinux_2_35_aarch64.whl; \
+    else \
+        pip install qi==3.1.5; \
+    fi \
+ && rm -f /tmp/*.whl /tmp/requirements.txt
+
+COPY grpc_communication /workspace/grpc_communication
+COPY pepper_client/client.py /workspace/pepper_client/client.py
+
+WORKDIR /workspace/pepper_client
+ENTRYPOINT ["python", "client.py"]

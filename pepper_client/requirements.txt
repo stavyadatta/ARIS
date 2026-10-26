@@ -1,0 +1,8 @@
+# ARIS Pepper client dependencies (Python 3.10).
+# The NAOqi SDK (qi) is installed separately: on aarch64 (e.g. Raspberry Pi 5)
+# use the bundled qi-3.1.4-cp310-cp310-manylinux_2_35_aarch64.whl, on x86_64
+# use `pip install qi==3.1.5`.
+grpcio==1.62.2
+protobuf==3.20.3
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
